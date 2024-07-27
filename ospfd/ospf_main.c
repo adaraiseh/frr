@@ -307,6 +307,16 @@ int main(int argc, char **argv)
 	ospf_gr_init();
 	ospf_gr_helper_init();
 
+	/* NB hooks registration */
+	hook_register(routing_conf_event,
+		      routing_control_plane_protocols_name_validate);
+	hook_register(routing_create,
+		      routing_control_plane_protocols_ospfd_create);
+	hook_register(routing_destroy,
+		      routing_control_plane_protocols_ospfd_destroy);
+
+	routing_control_plane_protocols_register_vrf_dependency();
+
 	/* OSPF errors init */
 	ospf_error_init();
 

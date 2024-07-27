@@ -8,6 +8,24 @@
 #ifndef OSPFD_OSFP_NB_H_
 #define OSFPD_OSPF_NB_H_
 
+/*
+ * Callback registered with routing_nb lib to validate the
+ * instance of ospf
+ */
+int routing_control_plane_protocols_name_validate(struct nb_cb_create_args *args);
+
+/*
+ * Callback registered with routing_nb lib to create ospfd
+ * instance
+ */
+int routing_control_plane_protocols_ospfd_create(struct nb_cb_create_args *args);
+
+/*
+ * Callback registered with routing_nb lib to destory ospfd
+ * instance
+ */
+int routing_control_plane_protocols_ospfd_destroy(
+	struct nb_cb_destroy_args *args);
 
 extern const struct frr_yang_module_info frr_ospfd_info;
 

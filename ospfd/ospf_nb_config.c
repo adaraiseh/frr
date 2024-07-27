@@ -5,7 +5,54 @@
  */
 
 #include "northbound.h"
+
 #include "ospfd/ospf_nb.h"
+#include "ospfd/ospfd.h"
+#include "ospfd/ospf_dump.h"
+#include "ospfd/ospf_interface.h"
+#include "ospfd/ospf_lsa.h"
+#include "ospfd/ospf_lsdb.h"
+#include "ospfd/ospf_neighbor.h"
+#include "ospfd/ospf_asbr.h"
+
+#include "lib/vrf.h"
+#include "defaults.h"
+#include "zclient.h"
+
+FRR_CFG_DEFAULT_BOOL(OSPF_LOG_ADJACENCY_CHANGES,
+		     {
+			     .val_bool = true,
+			     .match_profile = "datacenter",
+		     },
+		     { .val_bool = false }, );
+
+int routing_control_plane_protocols_name_validate(struct nb_cb_create_args *args)
+{
+	const char *vrf_name;
+	const char *instance_str;
+	unsigned short instance = 0;
+
+	instance_str = yang_dnode_get_string(args->dnode, "name");
+	instance = strtoul(instance_str, NULL, 10);
+	vrf_name = yang_dnode_get_string(args->dnode, "vrf");
+
+	/* check instance mode */
+	if (!ospf_instance && instance) {
+		snprintf(args->errmsg, args->errmsg_len,
+			 "OSPF is not running in instance mode");
+		return NB_ERR_VALIDATION;
+	}
+
+	/* check vrf on instance mode */
+	if (instance && instance == ospf_instance) {
+		if (strcmp(vrf_name, VRF_DEFAULT_NAME)) {
+			snprintf(args->errmsg, args->errmsg_len,
+				 "VRF is not supported in instance mode");
+			return NB_ERR_VALIDATION;
+		}
+	}
+	return NB_OK;
+}
 
 /*
  * XPath: /frr-interface:lib/interface/frr-ospfd:ospf/instance
@@ -1102,17 +1149,92 @@ int lib_interface_ospf_instance_interface_address_priority_destroy(
 }
 
 /*
+ * XPath:
+ * /frr-routing:routing/control-plane-protocols/control-plane-protocol
+ */
+int routing_control_plane_protocols_ospfd_create(struct nb_cb_create_args *args)
+{
+	const char *vrf_name;
+	unsigned short instance = 0;
+	bool created = false;
+	struct ospf *ospf;
+
+	vrf_name = yang_dnode_get_string(args->dnode, "vrf");
+	instance = strtoul(yang_dnode_get_string(args->dnode, "name"), NULL, 10);
+
+	/* not my instance */
+	if (instance != ospf_instance)
+		return NB_ERR_NO_CHANGES;
+
+	ospf = ospf_get(instance, vrf_name, &created);
+	nb_running_set_entry(args->dnode, ospf);
+	if (created) {
+		if (DFLT_OSPF_LOG_ADJACENCY_CHANGES)
+			SET_FLAG(ospf->config, OSPF_LOG_ADJACENCY_CHANGES);
+	} else {
+		return NB_ERR_NO_CHANGES;
+	}
+
+	if (IS_DEBUG_OSPF_EVENT)
+		zlog_debug("Config command 'router ospf %d' received, vrf %s id %u oi_running %u",
+			   ospf->instance, ospf_get_name(ospf), ospf->vrf_id,
+			   ospf->oi_running);
+
+	return NB_OK;
+}
+
+int routing_control_plane_protocols_ospfd_destroy(struct nb_cb_destroy_args *args)
+{
+	struct ospf *ospf;
+
+	ospf = nb_running_get_entry(args->dnode, NULL, false);
+	if (ospf) {
+		if (ospf->instance != ospf_instance)
+			return NB_ERR_NO_CHANGES;
+		else {
+			if (ospf->gr_info.restart_support)
+				ospf_gr_nvm_delete(ospf);
+
+			ospf_finish(ospf);
+		}
+	} else {
+		return NB_ERR_NOT_FOUND;
+	}
+
+	return NB_OK;
+}
+
+/*
  * XPath: /frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-ospfd:ospf/auto-cost-reference-bandwidth
  */
 int routing_control_plane_protocols_control_plane_protocol_ospf_auto_cost_reference_bandwidth_modify(
 	struct nb_cb_modify_args *args)
 {
+	struct ospf *ospf;
+	struct vrf *vrf;
+	uint32_t refbw;
+	struct interface *ifp;
+
 	switch (args->event) {
 	case NB_EV_VALIDATE:
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
+		break;
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
+		ospf = nb_running_get_entry(args->dnode, NULL, true);
+		if (ospf->instance != ospf_instance)
+			return NB_OK;
+
+		vrf = vrf_lookup_by_id(ospf->vrf_id);
+		refbw = yang_dnode_get_uint32(args->dnode, NULL);
+
+		/* If reference bandwidth is changed. */
+		if ((refbw) == ospf->ref_bandwidth)
+			return NB_ERR_NO_CHANGES;
+
+		ospf->ref_bandwidth = refbw;
+		FOR_ALL_INTERFACES (vrf, ifp)
+			ospf_if_recalculate_output_cost(ifp);
 		break;
 	}
 
@@ -1122,12 +1244,28 @@ int routing_control_plane_protocols_control_plane_protocol_ospf_auto_cost_refere
 int routing_control_plane_protocols_control_plane_protocol_ospf_auto_cost_reference_bandwidth_destroy(
 	struct nb_cb_destroy_args *args)
 {
+	struct ospf *ospf;
+	struct vrf *vrf;
+	struct interface *ifp;
+
 	switch (args->event) {
 	case NB_EV_VALIDATE:
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
+		break;
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
+		ospf = nb_running_get_entry(args->dnode, NULL, true);
+		if (ospf->instance != ospf_instance)
+			return NB_OK;
+
+		vrf = vrf_lookup_by_id(ospf->vrf_id);
+		if (ospf->ref_bandwidth == OSPF_DEFAULT_REF_BANDWIDTH) {
+			return NB_OK;
+		}
+
+		ospf->ref_bandwidth = OSPF_DEFAULT_REF_BANDWIDTH;
+		FOR_ALL_INTERFACES (vrf, ifp)
+			ospf_if_recalculate_output_cost(ifp);
 		break;
 	}
 
@@ -1140,12 +1278,20 @@ int routing_control_plane_protocols_control_plane_protocol_ospf_auto_cost_refere
 int routing_control_plane_protocols_control_plane_protocol_ospf_use_arp_modify(
 	struct nb_cb_modify_args *args)
 {
+	struct ospf *ospf;
+	bool use_arp;
 	switch (args->event) {
 	case NB_EV_VALIDATE:
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
+		break;
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
+		ospf = nb_running_get_entry(args->dnode, NULL, true);
+		if (ospf->instance != ospf_instance)
+			return NB_OK;
+
+		use_arp = yang_dnode_get_bool(args->dnode, NULL);
+		ospf->proactive_arp = use_arp;
 		break;
 	}
 
@@ -1158,12 +1304,47 @@ int routing_control_plane_protocols_control_plane_protocol_ospf_use_arp_modify(
 int routing_control_plane_protocols_control_plane_protocol_ospf_capability_opaque_modify(
 	struct nb_cb_modify_args *args)
 {
+	struct ospf *ospf;
+	bool opaque_capable;
 	switch (args->event) {
 	case NB_EV_VALIDATE:
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
+		break;
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
+		ospf = nb_running_get_entry(args->dnode, NULL, true);
+		if (ospf->instance != ospf_instance)
+			return NB_OK;
+
+		opaque_capable = yang_dnode_get_bool(args->dnode, NULL);
+
+		/* Check that OSPF is using default VRF */
+		if (ospf->vrf_id != VRF_DEFAULT) {
+			snprintf(args->errmsg, args->errmsg_len,
+				 "OSPF Opaque LSA is only supported in default VRF");
+			return NB_ERR;
+		}
+		if (opaque_capable) {
+			/* Turn on the "master switch" of opaque-lsa capability. */
+			if (!CHECK_FLAG(ospf->config, OSPF_OPAQUE_CAPABLE)) {
+				if (IS_DEBUG_OSPF_EVENT)
+					zlog_debug(
+						"Opaque capability: OFF -> ON");
+
+				SET_FLAG(ospf->config, OSPF_OPAQUE_CAPABLE);
+				ospf_renegotiate_optional_capabilities(ospf);
+			}
+		} else {
+			/* Turn off the "master switch" of opaque-lsa capability. */
+			if (CHECK_FLAG(ospf->config, OSPF_OPAQUE_CAPABLE)) {
+				if (IS_DEBUG_OSPF_EVENT)
+					zlog_debug(
+						"Opaque capability: ON -> OFF");
+
+				UNSET_FLAG(ospf->config, OSPF_OPAQUE_CAPABLE);
+				ospf_renegotiate_optional_capabilities(ospf);
+			}
+		}
 		break;
 	}
 
@@ -1176,12 +1357,33 @@ int routing_control_plane_protocols_control_plane_protocol_ospf_capability_opaqu
 int routing_control_plane_protocols_control_plane_protocol_ospf_compatible_rfc1583_modify(
 	struct nb_cb_modify_args *args)
 {
+	struct ospf *ospf;
+	bool rfc1583_compatible;
 	switch (args->event) {
 	case NB_EV_VALIDATE:
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
+		break;
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
+		ospf = nb_running_get_entry(args->dnode, NULL, true);
+		if (ospf->instance != ospf_instance)
+			return NB_OK;
+
+		rfc1583_compatible = yang_dnode_get_bool(args->dnode, NULL);
+		if (rfc1583_compatible) {
+			if (!CHECK_FLAG(ospf->config, OSPF_RFC1583_COMPATIBLE)) {
+				SET_FLAG(ospf->config, OSPF_RFC1583_COMPATIBLE);
+				ospf_spf_calculate_schedule(ospf,
+							    SPF_FLAG_CONFIG_CHANGE);
+			}
+		} else {
+			if (CHECK_FLAG(ospf->config, OSPF_RFC1583_COMPATIBLE)) {
+				UNSET_FLAG(ospf->config,
+					   OSPF_RFC1583_COMPATIBLE);
+				ospf_spf_calculate_schedule(ospf,
+							    SPF_FLAG_CONFIG_CHANGE);
+			}
+		}
 		break;
 	}
 
@@ -1191,12 +1393,22 @@ int routing_control_plane_protocols_control_plane_protocol_ospf_compatible_rfc15
 int routing_control_plane_protocols_control_plane_protocol_ospf_compatible_rfc1583_destroy(
 	struct nb_cb_destroy_args *args)
 {
+	struct ospf *ospf;
 	switch (args->event) {
 	case NB_EV_VALIDATE:
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
+		break;
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
+		ospf = nb_running_get_entry(args->dnode, NULL, true);
+		if (ospf->instance != ospf_instance)
+			return NB_OK;
+
+		if (CHECK_FLAG(ospf->config, OSPF_RFC1583_COMPATIBLE)) {
+			UNSET_FLAG(ospf->config, OSPF_RFC1583_COMPATIBLE);
+			ospf_spf_calculate_schedule(ospf,
+						    SPF_FLAG_CONFIG_CHANGE);
+		}
 		break;
 	}
 
@@ -1209,12 +1421,21 @@ int routing_control_plane_protocols_control_plane_protocol_ospf_compatible_rfc15
 int routing_control_plane_protocols_control_plane_protocol_ospf_default_metric_modify(
 	struct nb_cb_modify_args *args)
 {
+	struct ospf *ospf;
+	int metric = -1;
 	switch (args->event) {
 	case NB_EV_VALIDATE:
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
+		break;
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
+		ospf = nb_running_get_entry(args->dnode, NULL, true);
+		if (ospf->instance != ospf_instance)
+			return NB_OK;
+
+		metric = yang_dnode_get_uint32(args->dnode, NULL);
+		ospf->default_metric = metric;
+		ospf_schedule_asbr_redist_update(ospf);
 		break;
 	}
 
@@ -1224,12 +1445,19 @@ int routing_control_plane_protocols_control_plane_protocol_ospf_default_metric_m
 int routing_control_plane_protocols_control_plane_protocol_ospf_default_metric_destroy(
 	struct nb_cb_destroy_args *args)
 {
+	struct ospf *ospf;
 	switch (args->event) {
 	case NB_EV_VALIDATE:
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
+		break;
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
+		ospf = nb_running_get_entry(args->dnode, NULL, true);
+		if (ospf->instance != ospf_instance)
+			return NB_OK;
+
+		ospf->default_metric = -1;
+		ospf_schedule_asbr_redist_update(ospf);
 		break;
 	}
 
@@ -1242,12 +1470,20 @@ int routing_control_plane_protocols_control_plane_protocol_ospf_default_metric_d
 int routing_control_plane_protocols_control_plane_protocol_ospf_write_multiplier_modify(
 	struct nb_cb_modify_args *args)
 {
+	struct ospf *ospf;
 	switch (args->event) {
 	case NB_EV_VALIDATE:
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
+		break;
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
+		uint32_t write_oi_count;
+		ospf = nb_running_get_entry(args->dnode, NULL, true);
+		if (ospf->instance != ospf_instance)
+			return NB_OK;
+
+		write_oi_count = yang_dnode_get_uint8(args->dnode, NULL);
+		ospf->write_oi_count = write_oi_count;
 		break;
 	}
 
@@ -1257,12 +1493,18 @@ int routing_control_plane_protocols_control_plane_protocol_ospf_write_multiplier
 int routing_control_plane_protocols_control_plane_protocol_ospf_write_multiplier_destroy(
 	struct nb_cb_destroy_args *args)
 {
+	struct ospf *ospf;
 	switch (args->event) {
 	case NB_EV_VALIDATE:
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
+		break;
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
+		ospf = nb_running_get_entry(args->dnode, NULL, true);
+		if (ospf->instance != ospf_instance)
+			return NB_OK;
+
+		ospf->write_oi_count = OSPF_WRITE_INTERFACE_COUNT_DEFAULT;
 		break;
 	}
 
@@ -1279,6 +1521,7 @@ int routing_control_plane_protocols_control_plane_protocol_ospf_router_info_as_m
 	case NB_EV_VALIDATE:
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
+		break;
 	case NB_EV_APPLY:
 		/* TODO: implement me. */
 		break;
@@ -1294,6 +1537,7 @@ int routing_control_plane_protocols_control_plane_protocol_ospf_router_info_as_d
 	case NB_EV_VALIDATE:
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
+		break;
 	case NB_EV_APPLY:
 		/* TODO: implement me. */
 		break;
