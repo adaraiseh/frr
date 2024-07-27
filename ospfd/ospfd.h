@@ -814,4 +814,6 @@ extern int p_spaces_compare_func(const struct p_space *a,
 extern int q_spaces_compare_func(const struct q_space *a,
 				 const struct q_space *b);
 
+extern void ospf_cli_init(void);
+
 #endif /* _ZEBRA_OSPFD_H */

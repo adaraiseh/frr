@@ -294,6 +294,7 @@ int main(int argc, char **argv)
 	ospf_vty_init();
 	ospf_vty_show_init();
 	ospf_vty_clear_init();
+	ospf_cli_init();
 
 	/* OSPF BFD init */
 	ospf_bfd_init(master);
