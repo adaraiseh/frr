@@ -1512,9 +1512,9 @@ int routing_control_plane_protocols_control_plane_protocol_ospf_write_multiplier
 }
 
 /*
- * XPath: /frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-ospfd:ospf/router-info/as
+ * XPath: /frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-ospfd:ospf/router-info
  */
-int routing_control_plane_protocols_control_plane_protocol_ospf_router_info_as_modify(
+int routing_control_plane_protocols_control_plane_protocol_ospf_router_info_modify(
 	struct nb_cb_modify_args *args)
 {
 	switch (args->event) {
@@ -1530,7 +1530,7 @@ int routing_control_plane_protocols_control_plane_protocol_ospf_router_info_as_m
 	return NB_OK;
 }
 
-int routing_control_plane_protocols_control_plane_protocol_ospf_router_info_as_destroy(
+int routing_control_plane_protocols_control_plane_protocol_ospf_router_info_destroy(
 	struct nb_cb_destroy_args *args)
 {
 	switch (args->event) {
@@ -1538,39 +1538,6 @@ int routing_control_plane_protocols_control_plane_protocol_ospf_router_info_as_d
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
 		break;
-	case NB_EV_APPLY:
-		/* TODO: implement me. */
-		break;
-	}
-
-	return NB_OK;
-}
-
-/*
- * XPath: /frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-ospfd:ospf/router-info/area
- */
-int routing_control_plane_protocols_control_plane_protocol_ospf_router_info_area_modify(
-	struct nb_cb_modify_args *args)
-{
-	switch (args->event) {
-	case NB_EV_VALIDATE:
-	case NB_EV_PREPARE:
-	case NB_EV_ABORT:
-	case NB_EV_APPLY:
-		/* TODO: implement me. */
-		break;
-	}
-
-	return NB_OK;
-}
-
-int routing_control_plane_protocols_control_plane_protocol_ospf_router_info_area_destroy(
-	struct nb_cb_destroy_args *args)
-{
-	switch (args->event) {
-	case NB_EV_VALIDATE:
-	case NB_EV_PREPARE:
-	case NB_EV_ABORT:
 	case NB_EV_APPLY:
 		/* TODO: implement me. */
 		break;

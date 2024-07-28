@@ -38,6 +38,11 @@ module frr-ospfd {
       "Initial revision.";
   }
 
+  revision 2024-07-28 {
+    description
+      "Changed router-info to not include area value.";
+  }
+
   identity ospf {
     base frr-rt:routing-protocol;
     description
@@ -382,21 +387,17 @@ module frr-ospfd {
         "Maximum number of interfaces serviced per write.";
     }
 
-    container router-info {
-      choice router-info {
-        case as {
-          leaf as {
-            type boolean;
-            description
-              "Enable the Router Information functionality with AS flooding scope.";
-          }
+    leaf router-info {
+      type enumeration {
+        enum "as" {
+          value 1;
+          description
+          "Enable the Router Information functionality with AS flooding scope.";
         }
-        case area {
-          leaf area {
-            type ospf-area-id;
-            description
-            "Enable the Router Information functionality with Area flooding scope.";
-          }
+        enum "area" {
+          value 2;
+          description
+          "Enable the Router Information functionality with Area flooding scope.";
         }
       }
     }
