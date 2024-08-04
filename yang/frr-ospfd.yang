@@ -43,6 +43,11 @@ module frr-ospfd {
       "Changed router-info to not include area value.";
   }
 
+  revision 2024-08-04 {
+    description
+      "Changed redistribute-group to include table number and ospf instance.";
+  }
+
   identity ospf {
     base frr-rt:routing-protocol;
     description
@@ -458,8 +463,49 @@ module frr-ospfd {
         description
           "Protocol.";
       }
+      choice protocol-type {
+        case protocol-table {
+          when "./protocol = \"table\"";
+          list table {
+            key "table";
+            when "../protocol = \"table\"";
+            description
+              "Routing table number";
 
-      uses metric-common-group;
+            leaf table {
+              type uint16 {
+                  range "1..65535";
+              }
+              description
+                "Routing table number.";
+            }
+
+            uses metric-common-group;
+          }
+        }
+        case protocol-ospf {
+          when "./protocol = \"ospf\"";
+          list instance {
+            key "instance";
+            when "../protocol = \"ospf\"";
+            description
+              "OSPF instance number";
+
+            leaf instance {
+              type uint16 {
+                  range "1..65535";
+              }
+              description
+                "OSPF instance number.";
+            }
+
+            uses metric-common-group;
+          }
+        }
+        case protocol-other {
+          uses metric-common-group;
+        }
+      }
     }
   }
 

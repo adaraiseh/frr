@@ -365,6 +365,62 @@ const struct frr_yang_module_info frr_ospfd_info = {
 			}
 		},
 		{
+			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-ospfd:ospf/redistribute/table",
+			.cbs = {
+				.create = routing_control_plane_protocols_control_plane_protocol_ospf_redistribute_table_create,
+				.destroy = routing_control_plane_protocols_control_plane_protocol_ospf_redistribute_table_destroy,
+			}
+		},
+		{
+			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-ospfd:ospf/redistribute/table/metric",
+			.cbs = {
+				.modify = routing_control_plane_protocols_control_plane_protocol_ospf_redistribute_table_metric_modify,
+				.destroy = routing_control_plane_protocols_control_plane_protocol_ospf_redistribute_table_metric_destroy,
+			}
+		},
+		{
+			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-ospfd:ospf/redistribute/table/metric-type",
+			.cbs = {
+				.modify = routing_control_plane_protocols_control_plane_protocol_ospf_redistribute_table_metric_type_modify,
+				.destroy = routing_control_plane_protocols_control_plane_protocol_ospf_redistribute_table_metric_type_destroy,
+			}
+		},
+		{
+			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-ospfd:ospf/redistribute/table/route-map",
+			.cbs = {
+				.modify = routing_control_plane_protocols_control_plane_protocol_ospf_redistribute_table_route_map_modify,
+				.destroy = routing_control_plane_protocols_control_plane_protocol_ospf_redistribute_table_route_map_destroy,
+			}
+		},
+		{
+			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-ospfd:ospf/redistribute/instance",
+			.cbs = {
+				.create = routing_control_plane_protocols_control_plane_protocol_ospf_redistribute_instance_create,
+				.destroy = routing_control_plane_protocols_control_plane_protocol_ospf_redistribute_instance_destroy,
+			}
+		},
+		{
+			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-ospfd:ospf/redistribute/instance/metric",
+			.cbs = {
+				.modify = routing_control_plane_protocols_control_plane_protocol_ospf_redistribute_instance_metric_modify,
+				.destroy = routing_control_plane_protocols_control_plane_protocol_ospf_redistribute_instance_metric_destroy,
+			}
+		},
+		{
+			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-ospfd:ospf/redistribute/instance/metric-type",
+			.cbs = {
+				.modify = routing_control_plane_protocols_control_plane_protocol_ospf_redistribute_instance_metric_type_modify,
+				.destroy = routing_control_plane_protocols_control_plane_protocol_ospf_redistribute_instance_metric_type_destroy,
+			}
+		},
+		{
+			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-ospfd:ospf/redistribute/instance/route-map",
+			.cbs = {
+				.modify = routing_control_plane_protocols_control_plane_protocol_ospf_redistribute_instance_route_map_modify,
+				.destroy = routing_control_plane_protocols_control_plane_protocol_ospf_redistribute_instance_route_map_destroy,
+			}
+		},
+		{
 			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-ospfd:ospf/distance/admin-value",
 			.cbs = {
 				.modify = routing_control_plane_protocols_control_plane_protocol_ospf_distance_admin_value_modify,
