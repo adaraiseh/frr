@@ -296,6 +296,12 @@ const struct frr_yang_module_info frr_ospfd_info = {
 			}
 		},
 		{
+			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-ospfd:ospf/default-information",
+			.cbs = {
+				.apply_finish =  routing_control_plane_protocols_control_plane_protocol_ospf_default_information_apply_finish,
+			},
+		},
+		{
 			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-ospfd:ospf/default-information/originate",
 			.cbs = {
 				.modify = routing_control_plane_protocols_control_plane_protocol_ospf_default_information_originate_modify,

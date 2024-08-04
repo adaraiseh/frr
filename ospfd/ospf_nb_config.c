@@ -14,6 +14,7 @@
 #include "ospfd/ospf_lsdb.h"
 #include "ospfd/ospf_neighbor.h"
 #include "ospfd/ospf_asbr.h"
+#include "ospfd/ospf_zebra.h"
 
 #include "lib/vrf.h"
 #include "defaults.h"
@@ -1547,35 +1548,97 @@ int routing_control_plane_protocols_control_plane_protocol_ospf_router_info_dest
 }
 
 /*
+ * XPath: /frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-ospfd:ospf/default-information
+ */
+void routing_control_plane_protocols_control_plane_protocol_ospf_default_information_apply_finish(
+	struct nb_cb_apply_finish_args *args)
+{
+	struct ospf *ospf;
+	ospf = nb_running_get_entry(args->dnode, NULL, true);
+
+	int default_originate = DEFAULT_ORIGINATE_ZEBRA;
+	int type = -1;
+	int metric = -1;
+	struct ospf_redist *red;
+	int cur_originate = ospf->default_originate;
+	bool sameRtmap = false;
+	const char *rtmap = NULL;
+	bool originate = false;
+	
+	if (yang_dnode_exists(args->dnode, "originate"))
+		originate = yang_dnode_get_bool(args->dnode, "originate");
+
+	/* check if "originate" was enabled */
+	if (originate) {
+		red = ospf_redist_add(ospf, DEFAULT_ROUTE, 0);
+		/* Check whether "always" was specified */
+		if (yang_dnode_exists(args->dnode, "always")) {
+			bool always = yang_dnode_get_bool(args->dnode, "always");
+			if (always)
+				default_originate = DEFAULT_ORIGINATE_ALWAYS;
+		}
+
+		if (yang_dnode_exists(args->dnode, "metric"))
+			metric = yang_dnode_get_uint32(args->dnode, "metric");
+
+		if (yang_dnode_exists(args->dnode, "metric-type"))
+			type = yang_dnode_get_enum(args->dnode, "metric-type");
+
+		if (yang_dnode_exists(args->dnode, "route-map"))
+			rtmap = yang_dnode_get_string(args->dnode, "route-map");
+
+		/* To check if user is providing same route map */
+		if ((!rtmap && !ROUTEMAP_NAME(red)) ||
+		    (rtmap && ROUTEMAP_NAME(red) &&
+		     (strcmp(rtmap, ROUTEMAP_NAME(red)) == 0)))
+			sameRtmap = true;
+
+		/* Don't allow if the same lsa is already originated. */
+		if ((sameRtmap) && (red->dmetric.type == type) &&
+		    (red->dmetric.value == metric) &&
+		    (cur_originate == default_originate))
+			return;
+
+		/* Updating Metric details */
+		red->dmetric.type = type;
+		red->dmetric.value = metric;
+
+		/* updating route map details */
+		if (rtmap)
+			ospf_routemap_set(red, rtmap);
+		else
+			ospf_routemap_unset(red);
+
+		ospf_redistribute_default_set(ospf, default_originate, type,
+					      metric);
+	} else {
+		/* originate is disabled */
+		red = ospf_redist_lookup(ospf, DEFAULT_ROUTE, 0);
+		if (!red)
+			return;
+
+		ospf_routemap_unset(red);
+		ospf_redist_del(ospf, DEFAULT_ROUTE, 0);
+
+		ospf_redistribute_default_set(ospf, DEFAULT_ORIGINATE_NONE, 0,
+					      0);
+	}
+}
+
+/*
  * XPath: /frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-ospfd:ospf/default-information/originate
  */
 int routing_control_plane_protocols_control_plane_protocol_ospf_default_information_originate_modify(
 	struct nb_cb_modify_args *args)
 {
-	switch (args->event) {
-	case NB_EV_VALIDATE:
-	case NB_EV_PREPARE:
-	case NB_EV_ABORT:
-	case NB_EV_APPLY:
-		/* TODO: implement me. */
-		break;
-	}
-
+	/* implmented in default_information_apply_finish */
 	return NB_OK;
 }
 
 int routing_control_plane_protocols_control_plane_protocol_ospf_default_information_originate_destroy(
 	struct nb_cb_destroy_args *args)
 {
-	switch (args->event) {
-	case NB_EV_VALIDATE:
-	case NB_EV_PREPARE:
-	case NB_EV_ABORT:
-	case NB_EV_APPLY:
-		/* TODO: implement me. */
-		break;
-	}
-
+	/* implmented in default_information_apply_finish */
 	return NB_OK;
 }
 
@@ -1585,30 +1648,14 @@ int routing_control_plane_protocols_control_plane_protocol_ospf_default_informat
 int routing_control_plane_protocols_control_plane_protocol_ospf_default_information_always_modify(
 	struct nb_cb_modify_args *args)
 {
-	switch (args->event) {
-	case NB_EV_VALIDATE:
-	case NB_EV_PREPARE:
-	case NB_EV_ABORT:
-	case NB_EV_APPLY:
-		/* TODO: implement me. */
-		break;
-	}
-
+	/* implmented in default_information_apply_finish */
 	return NB_OK;
 }
 
 int routing_control_plane_protocols_control_plane_protocol_ospf_default_information_always_destroy(
 	struct nb_cb_destroy_args *args)
 {
-	switch (args->event) {
-	case NB_EV_VALIDATE:
-	case NB_EV_PREPARE:
-	case NB_EV_ABORT:
-	case NB_EV_APPLY:
-		/* TODO: implement me. */
-		break;
-	}
-
+	/* implmented in default_information_apply_finish */
 	return NB_OK;
 }
 
@@ -1618,30 +1665,14 @@ int routing_control_plane_protocols_control_plane_protocol_ospf_default_informat
 int routing_control_plane_protocols_control_plane_protocol_ospf_default_information_metric_modify(
 	struct nb_cb_modify_args *args)
 {
-	switch (args->event) {
-	case NB_EV_VALIDATE:
-	case NB_EV_PREPARE:
-	case NB_EV_ABORT:
-	case NB_EV_APPLY:
-		/* TODO: implement me. */
-		break;
-	}
-
+	/* implmented in default_information_apply_finish */
 	return NB_OK;
 }
 
 int routing_control_plane_protocols_control_plane_protocol_ospf_default_information_metric_destroy(
 	struct nb_cb_destroy_args *args)
 {
-	switch (args->event) {
-	case NB_EV_VALIDATE:
-	case NB_EV_PREPARE:
-	case NB_EV_ABORT:
-	case NB_EV_APPLY:
-		/* TODO: implement me. */
-		break;
-	}
-
+	/* implmented in default_information_apply_finish */
 	return NB_OK;
 }
 
@@ -1651,30 +1682,14 @@ int routing_control_plane_protocols_control_plane_protocol_ospf_default_informat
 int routing_control_plane_protocols_control_plane_protocol_ospf_default_information_metric_type_modify(
 	struct nb_cb_modify_args *args)
 {
-	switch (args->event) {
-	case NB_EV_VALIDATE:
-	case NB_EV_PREPARE:
-	case NB_EV_ABORT:
-	case NB_EV_APPLY:
-		/* TODO: implement me. */
-		break;
-	}
-
+	/* implmented in default_information_apply_finish */
 	return NB_OK;
 }
 
 int routing_control_plane_protocols_control_plane_protocol_ospf_default_information_metric_type_destroy(
 	struct nb_cb_destroy_args *args)
 {
-	switch (args->event) {
-	case NB_EV_VALIDATE:
-	case NB_EV_PREPARE:
-	case NB_EV_ABORT:
-	case NB_EV_APPLY:
-		/* TODO: implement me. */
-		break;
-	}
-
+	/* implmented in default_information_apply_finish */
 	return NB_OK;
 }
 
@@ -1684,30 +1699,14 @@ int routing_control_plane_protocols_control_plane_protocol_ospf_default_informat
 int routing_control_plane_protocols_control_plane_protocol_ospf_default_information_route_map_modify(
 	struct nb_cb_modify_args *args)
 {
-	switch (args->event) {
-	case NB_EV_VALIDATE:
-	case NB_EV_PREPARE:
-	case NB_EV_ABORT:
-	case NB_EV_APPLY:
-		/* TODO: implement me. */
-		break;
-	}
-
+	/* implmented in default_information_apply_finish */
 	return NB_OK;
 }
 
 int routing_control_plane_protocols_control_plane_protocol_ospf_default_information_route_map_destroy(
 	struct nb_cb_destroy_args *args)
 {
-	switch (args->event) {
-	case NB_EV_VALIDATE:
-	case NB_EV_PREPARE:
-	case NB_EV_ABORT:
-	case NB_EV_APPLY:
-		/* TODO: implement me. */
-		break;
-	}
-
+	/* implmented in default_information_apply_finish */
 	return NB_OK;
 }
 
