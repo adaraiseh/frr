@@ -561,6 +561,11 @@ struct bgp_aggregate {
 /* path PREFIX (addpath rxid NUMBER) */
 #define PATH_ADDPATH_STR_BUFFER PREFIX2STR_BUFFER + 32
 
+#define BGP_PATH_INFO_NUM_LABELS(pi)                                           \
+	((pi) && (pi)->extra && (pi)->extra->labels                            \
+		 ? (pi)->extra->labels->num_labels                             \
+		 : 0)
+
 enum bgp_path_type {
 	BGP_PATH_SHOW_ALL,
 	BGP_PATH_SHOW_BESTPATH,
@@ -748,7 +753,6 @@ extern void bgp_path_info_delete(struct bgp_dest *dest,
 extern struct bgp_path_info_extra *
 bgp_path_info_extra_get(struct bgp_path_info *path);
 extern bool bgp_path_info_has_valid_label(const struct bgp_path_info *path);
-extern uint8_t bgp_path_info_num_labels(const struct bgp_path_info *pi);
 extern void bgp_path_info_set_flag(struct bgp_dest *dest,
 				   struct bgp_path_info *path, uint32_t flag);
 extern void bgp_path_info_unset_flag(struct bgp_dest *dest,
@@ -798,8 +802,7 @@ extern void bgp_update(struct peer *peer, const struct prefix *p,
 extern void bgp_withdraw(struct peer *peer, const struct prefix *p,
 			 uint32_t addpath_id, afi_t afi, safi_t safi, int type,
 			 int sub_type, struct prefix_rd *prd,
-			 mpls_label_t *label, uint8_t num_labels,
-			 struct bgp_route_evpn *evpn);
+			 mpls_label_t *label, uint8_t num_labels);
 
 /* for bgp_nexthop and bgp_damp */
 extern void bgp_process(struct bgp *bgp, struct bgp_dest *dest,
@@ -900,7 +903,8 @@ extern void route_vty_out_detail_header(struct vty *vty, struct bgp *bgp,
 					const struct prefix *p,
 					const struct prefix_rd *prd, afi_t afi,
 					safi_t safi, json_object *json,
-					bool incremental_print);
+					bool incremental_print,
+					bool local_table);
 extern void route_vty_out_detail(struct vty *vty, struct bgp *bgp,
 				 struct bgp_dest *bn, const struct prefix *p,
 				 struct bgp_path_info *path, afi_t afi,

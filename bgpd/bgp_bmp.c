@@ -1221,7 +1221,7 @@ afibreak:
 	    (safi == SAFI_MPLS_VPN))
 		prd = (struct prefix_rd *)bgp_dest_get_prefix(bmp->syncrdpos);
 
-	bpi_num_labels = bgp_path_info_num_labels(bpi);
+	bpi_num_labels = BGP_PATH_INFO_NUM_LABELS(bpi);
 
 	if (bpi && CHECK_FLAG(bpi->flags, BGP_PATH_SELECTED) &&
 	    CHECK_FLAG(bmp->targets->afimon[afi][safi], BMP_MON_LOC_RIB)) {
@@ -1356,7 +1356,7 @@ static bool bmp_wrqueue_locrib(struct bmp *bmp, struct pullwr *pullwr)
 			break;
 	}
 
-	bpi_num_labels = bgp_path_info_num_labels(bpi);
+	bpi_num_labels = BGP_PATH_INFO_NUM_LABELS(bpi);
 
 	bmp_monitor(bmp, peer, 0, BMP_PEER_TYPE_LOC_RIB_INSTANCE, &bqe->p, prd,
 		    bpi ? bpi->attr : NULL, afi, safi,
@@ -1434,7 +1434,7 @@ static bool bmp_wrqueue(struct bmp *bmp, struct pullwr *pullwr)
 				break;
 		}
 
-		bpi_num_labels = bgp_path_info_num_labels(bpi);
+		bpi_num_labels = BGP_PATH_INFO_NUM_LABELS(bpi);
 
 		bmp_monitor(bmp, peer, BMP_PEER_FLAG_L,
 			    BMP_PEER_TYPE_GLOBAL_INSTANCE, &bqe->p, prd,
@@ -2743,7 +2743,7 @@ DEFPY(show_bmp,
 			}
 			out = ttable_dump(tt, "\n");
 			vty_out(vty, "%s", out);
-			XFREE(MTYPE_TMP, out);
+			XFREE(MTYPE_TMP_TTABLE, out);
 			ttable_del(tt);
 
 			vty_out(vty, "\n    %zu connected clients:\n",
@@ -2770,7 +2770,7 @@ DEFPY(show_bmp,
 			}
 			out = ttable_dump(tt, "\n");
 			vty_out(vty, "%s", out);
-			XFREE(MTYPE_TMP, out);
+			XFREE(MTYPE_TMP_TTABLE, out);
 			ttable_del(tt);
 			vty_out(vty, "\n");
 		}

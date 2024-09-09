@@ -8041,7 +8041,7 @@ static int ospf_vty_dead_interval_set(struct vty *vty, const char *interval_str,
 	VTY_DECLVAR_CONTEXT(interface, ifp);
 	uint32_t seconds;
 	uint8_t hellomult;
-	struct in_addr addr;
+	struct in_addr addr = { INADDR_ANY };
 	int ret;
 	struct ospf_if_params *params;
 	struct ospf_interface *oi;
@@ -9846,7 +9846,7 @@ DEFPY(ip_ospf_prefix_suppression, ip_ospf_prefix_suppression_addr_cmd,
       "[no] ip ospf prefix-suppression [A.B.C.D]$ip_addr", NO_STR
       "IP Information\n"
       "OSPF interface commands\n"
-      "Supress OSPF prefix advertisement on this interface\n"
+      "Suppress OSPF prefix advertisement on this interface\n"
       "Address of interface\n")
 {
 	VTY_DECLVAR_CONTEXT(interface, ifp);

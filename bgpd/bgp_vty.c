@@ -302,17 +302,10 @@ static const char *get_afi_safi_json_str(afi_t afi, safi_t safi)
 /* unset srv6 locator */
 static int bgp_srv6_locator_unset(struct bgp *bgp)
 {
-	int ret;
 	struct listnode *node, *nnode;
 	struct srv6_locator_chunk *chunk;
 	struct bgp_srv6_function *func;
 	struct bgp *bgp_vrf;
-
-	/* release chunk notification via ZAPI */
-	ret = bgp_zebra_srv6_manager_release_locator_chunk(
-			bgp->srv6_locator_name);
-	if (ret < 0)
-		return -1;
 
 	/* refresh chunks */
 	for (ALL_LIST_ELEMENTS(bgp->srv6_locator_chunks, node, nnode, chunk)) {
@@ -352,19 +345,27 @@ static int bgp_srv6_locator_unset(struct bgp *bgp)
 			continue;
 
 		/* refresh vpnv4 tovpn_sid_locator */
-		srv6_locator_chunk_free(
-			&bgp_vrf->vpn_policy[AFI_IP].tovpn_sid_locator);
+		srv6_locator_free(bgp_vrf->vpn_policy[AFI_IP].tovpn_sid_locator);
+		bgp_vrf->vpn_policy[AFI_IP].tovpn_sid_locator = NULL;
 
 		/* refresh vpnv6 tovpn_sid_locator */
-		srv6_locator_chunk_free(
-			&bgp_vrf->vpn_policy[AFI_IP6].tovpn_sid_locator);
+		srv6_locator_free(
+			bgp_vrf->vpn_policy[AFI_IP6].tovpn_sid_locator);
+		bgp_vrf->vpn_policy[AFI_IP6].tovpn_sid_locator = NULL;
 
 		/* refresh per-vrf tovpn_sid_locator */
-		srv6_locator_chunk_free(&bgp_vrf->tovpn_sid_locator);
+		srv6_locator_free(bgp_vrf->tovpn_sid_locator);
+		bgp_vrf->tovpn_sid_locator = NULL;
 	}
 
 	/* clear locator name */
 	memset(bgp->srv6_locator_name, 0, sizeof(bgp->srv6_locator_name));
+
+	/* clear SRv6 locator */
+	if (bgp->srv6_locator) {
+		srv6_locator_free(bgp->srv6_locator);
+		bgp->srv6_locator = NULL;
+	}
 
 	return 0;
 }
@@ -1695,15 +1696,18 @@ DEFUN (no_router_bgp,
 
 		/* Cannot delete default instance if vrf instances exist */
 		if (bgp->inst_type == BGP_INSTANCE_TYPE_DEFAULT) {
-			struct listnode *node;
+			struct listnode *node, *nnode;
 			struct bgp *tmp_bgp;
 
-			for (ALL_LIST_ELEMENTS_RO(bm->bgp, node, tmp_bgp)) {
+			for (ALL_LIST_ELEMENTS(bm->bgp, node, nnode, tmp_bgp)) {
 				if (tmp_bgp->inst_type != BGP_INSTANCE_TYPE_VRF)
 					continue;
 
-				if (CHECK_FLAG(tmp_bgp->vrf_flags, BGP_VRF_AUTO))
+				if (CHECK_FLAG(tmp_bgp->vrf_flags,
+					       BGP_VRF_AUTO)) {
+					bgp_delete(tmp_bgp);
 					continue;
+				}
 
 				if (CHECK_FLAG(
 					    tmp_bgp->af_flags[AFI_IP]
@@ -2267,9 +2271,9 @@ static int bgp_global_update_delay_config_vty(struct vty *vty,
 	 * Note that we only need to check this if this is the first time
 	 * setting the global config.
 	 */
-	if (bm->v_update_delay == BGP_UPDATE_DELAY_DEF) {
+	if (bm->v_update_delay == BGP_UPDATE_DELAY_DEFAULT) {
 		for (ALL_LIST_ELEMENTS(bm->bgp, node, nnode, bgp)) {
-			if (bgp->v_update_delay != BGP_UPDATE_DELAY_DEF) {
+			if (bgp->v_update_delay != BGP_UPDATE_DELAY_DEFAULT) {
 				vty_out(vty,
 					"%% update-delay configuration found in vrf %s\n",
 					bgp->inst_type == BGP_INSTANCE_TYPE_DEFAULT
@@ -2314,7 +2318,7 @@ static int bgp_global_update_delay_deconfig_vty(struct vty *vty)
 	struct listnode *node, *nnode;
 	struct bgp *bgp;
 
-	bm->v_update_delay = BGP_UPDATE_DELAY_DEF;
+	bm->v_update_delay = BGP_UPDATE_DELAY_DEFAULT;
 	bm->v_establish_wait = bm->v_update_delay;
 
 	for (ALL_LIST_ELEMENTS(bm->bgp, node, nnode, bgp)) {
@@ -2368,7 +2372,7 @@ static int bgp_update_delay_deconfig_vty(struct vty *vty)
 			"%%Failed: bgp update-delay configured globally. Delete per-vrf not permitted\n");
 		return CMD_WARNING_CONFIG_FAILED;
 	}
-	bgp->v_update_delay = BGP_UPDATE_DELAY_DEF;
+	bgp->v_update_delay = BGP_UPDATE_DELAY_DEFAULT;
 	bgp->v_establish_wait = bgp->v_update_delay;
 
 	return CMD_SUCCESS;
@@ -2928,11 +2932,10 @@ DEFUN(bgp_reject_as_sets, bgp_reject_as_sets_cmd,
 	 * with aspath containing AS_SET or AS_CONFED_SET.
 	 */
 	for (ALL_LIST_ELEMENTS(bgp->peer, node, nnode, peer)) {
-		if (BGP_IS_VALID_STATE_FOR_NOTIF(peer->connection->status)) {
-			peer->last_reset = PEER_DOWN_AS_SETS_REJECT;
+		peer->last_reset = PEER_DOWN_AS_SETS_REJECT;
+		if (BGP_IS_VALID_STATE_FOR_NOTIF(peer->connection->status))
 			bgp_notify_send(peer->connection, BGP_NOTIFY_CEASE,
 					BGP_NOTIFY_CEASE_CONFIG_CHANGE);
-		}
 	}
 
 	return CMD_SUCCESS;
@@ -2954,11 +2957,10 @@ DEFUN(no_bgp_reject_as_sets, no_bgp_reject_as_sets_cmd,
 	 * with aspath containing AS_SET or AS_CONFED_SET.
 	 */
 	for (ALL_LIST_ELEMENTS(bgp->peer, node, nnode, peer)) {
-		if (BGP_IS_VALID_STATE_FOR_NOTIF(peer->connection->status)) {
-			peer->last_reset = PEER_DOWN_AS_SETS_REJECT;
+		peer->last_reset = PEER_DOWN_AS_SETS_REJECT;
+		if (BGP_IS_VALID_STATE_FOR_NOTIF(peer->connection->status))
 			bgp_notify_send(peer->connection, BGP_NOTIFY_CEASE,
 					BGP_NOTIFY_CEASE_CONFIG_CHANGE);
-		}
 	}
 
 	return CMD_SUCCESS;
@@ -5107,12 +5109,13 @@ static int peer_conf_interface_get(struct vty *vty, const char *conf_if,
 		else
 			peer_flag_unset(peer, PEER_FLAG_IFPEER_V6ONLY);
 
+		peer->last_reset = PEER_DOWN_V6ONLY_CHANGE;
+
 		/* v6only flag changed. Reset bgp seesion */
-		if (BGP_IS_VALID_STATE_FOR_NOTIF(peer->connection->status)) {
-			peer->last_reset = PEER_DOWN_V6ONLY_CHANGE;
+		if (BGP_IS_VALID_STATE_FOR_NOTIF(peer->connection->status))
 			bgp_notify_send(peer->connection, BGP_NOTIFY_CEASE,
 					BGP_NOTIFY_CEASE_CONFIG_CHANGE);
-		} else
+		else
 			bgp_session_reset(peer);
 	}
 
@@ -10876,7 +10879,7 @@ DEFPY (bgp_srv6_locator,
 	snprintf(bgp->srv6_locator_name,
 		 sizeof(bgp->srv6_locator_name), "%s", name);
 
-	ret = bgp_zebra_srv6_manager_get_locator_chunk(name);
+	ret = bgp_zebra_srv6_manager_get_locator(name);
 	if (ret < 0)
 		return CMD_WARNING_CONFIG_FAILED;
 
@@ -10927,6 +10930,17 @@ DEFPY (show_bgp_srv6,
 		return CMD_SUCCESS;
 
 	vty_out(vty, "locator_name: %s\n", bgp->srv6_locator_name);
+	if (bgp->srv6_locator) {
+		vty_out(vty, "  prefix: %pFX\n", &bgp->srv6_locator->prefix);
+		vty_out(vty, "  block-length: %d\n",
+			bgp->srv6_locator->block_bits_length);
+		vty_out(vty, "  node-length: %d\n",
+			bgp->srv6_locator->node_bits_length);
+		vty_out(vty, "  func-length: %d\n",
+			bgp->srv6_locator->function_bits_length);
+		vty_out(vty, "  arg-length: %d\n",
+			bgp->srv6_locator->argument_bits_length);
+	}
 	vty_out(vty, "locator_chunks:\n");
 	for (ALL_LIST_ELEMENTS_RO(bgp->srv6_locator_chunks, node, chunk)) {
 		vty_out(vty, "- %pFX\n", &chunk->prefix);
@@ -12047,6 +12061,8 @@ static int bgp_show_summary(struct vty *vty, struct bgp *bgp, int afi, int safi,
 
 	if (show_failed && !failed_count) {
 		if (use_json) {
+			json_object_free(json_peers);
+
 			json_object_int_add(json, "failedPeersCount", 0);
 			json_object_int_add(json, "dynamicPeers", dn_count);
 			json_object_int_add(json, "totalPeers", count);
@@ -12328,6 +12344,12 @@ static int bgp_show_summary(struct vty *vty, struct bgp *bgp, int afi, int safi,
 				if (peer->domainname)
 					json_object_string_add(json_peer, "domainname",
 							       peer->domainname);
+
+				json_object_string_add(json_peer,
+						       "softwareVersion",
+						       peer->soft_version
+							       ? peer->soft_version
+							       : "n/a");
 
 				asn_asn2json(json_peer, "remoteAs", peer->as,
 					     bgp->asnotation);
@@ -17062,8 +17084,13 @@ static int bgp_show_one_peer_group(struct vty *vty, struct peer_group *group,
 			vty_out(vty, "\nBGP peer-group %s\n", group->name);
 	}
 
-	if ((group->bgp->as == conf->as) ||
-	    CHECK_FLAG(conf->as_type, AS_INTERNAL)) {
+	if (CHECK_FLAG(conf->as_type, AS_AUTO)) {
+		if (json)
+			json_object_string_add(json_peer_group, "type", "auto");
+		else
+			vty_out(vty, "  Peer-group type is auto\n");
+	} else if ((group->bgp->as == conf->as) ||
+		   CHECK_FLAG(conf->as_type, AS_INTERNAL)) {
 		if (json)
 			json_object_string_add(json_peer_group, "type",
 					       "internal");
@@ -18668,11 +18695,8 @@ static void bgp_config_write_peer_global(struct vty *vty, struct bgp *bgp,
 			peer->password);
 
 	/* neighbor solo */
-	if (CHECK_FLAG(peer->flags, PEER_FLAG_LONESOUL)) {
-		if (!peer_group_active(peer)) {
-			vty_out(vty, " neighbor %s solo\n", addr);
-		}
-	}
+	if (peergroup_flag_check(peer, PEER_FLAG_LONESOUL))
+		vty_out(vty, " neighbor %s solo\n", addr);
 
 	/* BGP port */
 	if (peer->port != BGP_PORT_DEFAULT) {
@@ -19341,7 +19365,7 @@ int bgp_config_write(struct vty *vty)
 		vty_out(vty, "bgp route-map delay-timer %u\n",
 			bm->rmap_update_timer);
 
-	if (bm->v_update_delay != BGP_UPDATE_DELAY_DEF) {
+	if (bm->v_update_delay != BGP_UPDATE_DELAY_DEFAULT) {
 		vty_out(vty, "bgp update-delay %d", bm->v_update_delay);
 		if (bm->v_update_delay != bm->v_establish_wait)
 			vty_out(vty, " %d", bm->v_establish_wait);

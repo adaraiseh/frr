@@ -680,9 +680,8 @@ route_match_address_prefix_list(void *rule, afi_t afi,
 	plist = prefix_list_lookup(afi, (char *)rule);
 	if (plist == NULL) {
 		if (unlikely(CHECK_FLAG(rmap_debug, DEBUG_ROUTEMAP_DETAIL)))
-			zlog_debug(
-				"%s: Prefix List %s specified does not exist defaulting to NO_MATCH",
-				__func__, (char *)rule);
+			zlog_debug("%s: Prefix List %s (%s) specified does not exist defaulting to NO_MATCH",
+				   __func__, (char *)rule, afi2str(afi));
 		return RMAP_NOMATCH;
 	}
 
@@ -1082,7 +1081,7 @@ route_match_vni(void *rule, const struct prefix *prefix, void *object)
 		return RMAP_NOOP;
 
 	for (label_cnt = 0; label_cnt < BGP_MAX_LABELS &&
-			    label_cnt < bgp_path_info_num_labels(path);
+			    label_cnt < BGP_PATH_INFO_NUM_LABELS(path);
 	     label_cnt++) {
 		if (vni == label2vni(&path->extra->labels->label[label_cnt]))
 			return RMAP_MATCH;
@@ -1237,6 +1236,8 @@ route_set_evpn_gateway_ip(void *rule, const struct prefix *prefix, void *object)
 	struct ipaddr *gw_ip = rule;
 	struct bgp_path_info *path;
 	struct prefix_evpn *evp;
+	struct bgp_route_evpn *bre = XCALLOC(MTYPE_BGP_EVPN_OVERLAY,
+					     sizeof(struct bgp_route_evpn));
 
 	if (prefix->family != AF_EVPN)
 		return RMAP_OKAY;
@@ -1252,9 +1253,9 @@ route_set_evpn_gateway_ip(void *rule, const struct prefix *prefix, void *object)
 	path = object;
 
 	/* Set gateway-ip value. */
-	path->attr->evpn_overlay.type = OVERLAY_INDEX_GATEWAY_IP;
-	memcpy(&path->attr->evpn_overlay.gw_ip, &gw_ip->ip.addr,
-	       IPADDRSZ(gw_ip));
+	bre->type = OVERLAY_INDEX_GATEWAY_IP;
+	memcpy(&bre->gw_ip, &gw_ip->ip.addr, IPADDRSZ(gw_ip));
+	bgp_attr_set_evpn_overlay(path->attr, bre);
 
 	return RMAP_OKAY;
 }
@@ -1991,10 +1992,9 @@ route_set_ip_nexthop(void *rule, const struct prefix *prefix, void *object)
 		SET_FLAG(path->attr->rmap_change_flags,
 			 BATTR_RMAP_NEXTHOP_UNCHANGED);
 	} else if (rins->peer_address) {
-		if ((CHECK_FLAG(peer->rmap_type, PEER_RMAP_TYPE_IN)
-		     || CHECK_FLAG(peer->rmap_type, PEER_RMAP_TYPE_IMPORT))
-		    && peer->su_remote
-		    && sockunion_family(peer->su_remote) == AF_INET) {
+		if ((CHECK_FLAG(peer->rmap_type, PEER_RMAP_TYPE_IN)) &&
+		    peer->su_remote &&
+		    sockunion_family(peer->su_remote) == AF_INET) {
 			path->attr->nexthop.s_addr =
 				sockunion2ip(peer->su_remote);
 			path->attr->flag |= ATTR_FLAG_BIT(BGP_ATTR_NEXT_HOP);
@@ -3949,8 +3949,7 @@ route_set_ipv6_nexthop_prefer_global(void *rule, const struct prefix *prefix,
 	path = object;
 	peer = path->peer;
 
-	if (CHECK_FLAG(peer->rmap_type, PEER_RMAP_TYPE_IN)
-	    || CHECK_FLAG(peer->rmap_type, PEER_RMAP_TYPE_IMPORT)) {
+	if (CHECK_FLAG(peer->rmap_type, PEER_RMAP_TYPE_IN)) {
 		/* Set next hop preference to global */
 		SET_FLAG(path->attr->nh_flags, BGP_ATTR_NH_MP_PREFER_GLOBAL);
 		SET_FLAG(path->attr->rmap_change_flags,
@@ -4076,10 +4075,8 @@ route_set_ipv6_nexthop_peer(void *rule, const struct prefix *pfx, void *object)
 	path = object;
 	peer = path->peer;
 
-	if ((CHECK_FLAG(peer->rmap_type, PEER_RMAP_TYPE_IN)
-	     || CHECK_FLAG(peer->rmap_type, PEER_RMAP_TYPE_IMPORT))
-	    && peer->su_remote
-	    && sockunion_family(peer->su_remote) == AF_INET6) {
+	if ((CHECK_FLAG(peer->rmap_type, PEER_RMAP_TYPE_IN)) &&
+	    peer->su_remote && sockunion_family(peer->su_remote) == AF_INET6) {
 		peer_address = peer->su_remote->sin6.sin6_addr;
 		/* Set next hop value and length in attribute. */
 		if (IN6_IS_ADDR_LINKLOCAL(&peer_address)) {
@@ -4094,7 +4091,6 @@ route_set_ipv6_nexthop_peer(void *rule, const struct prefix *pfx, void *object)
 				path->attr->mp_nexthop_len =
 					BGP_ATTR_NHLEN_IPV6_GLOBAL;
 		}
-
 	} else if (CHECK_FLAG(peer->rmap_type, PEER_RMAP_TYPE_OUT)) {
 		/* The next hop value will be set as part of packet
 		 * rewrite.

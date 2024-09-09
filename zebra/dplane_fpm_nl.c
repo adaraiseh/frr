@@ -36,13 +36,11 @@
 #include "zebra/zebra_dplane.h"
 #include "zebra/zebra_mpls.h"
 #include "zebra/zebra_router.h"
-#include "zebra/interface.h"
 #include "zebra/zebra_vxlan_private.h"
 #include "zebra/zebra_evpn.h"
 #include "zebra/zebra_evpn_mac.h"
 #include "zebra/kernel_netlink.h"
 #include "zebra/rt_netlink.h"
-#include "zebra/debug.h"
 #include "fpm/fpm.h"
 
 #include "zebra/dplane_fpm_nl_clippy.c"
@@ -383,7 +381,7 @@ DEFPY(fpm_show_status,
 
 		out = ttable_dump(table, "\n");
 		vty_out(vty, "%s\n", out);
-		XFREE(MTYPE_TMP, out);
+		XFREE(MTYPE_TMP_TTABLE, out);
 
 		ttable_del(table);
 	}
@@ -1680,6 +1678,25 @@ static int fpm_nl_process(struct zebra_dplane_provider *prov)
 
 	fnc = dplane_provider_get_data(prov);
 	limit = dplane_provider_get_work_limit(prov);
+
+	frr_with_mutex (&fnc->ctxqueue_mutex) {
+		cur_queue = dplane_ctx_queue_count(&fnc->ctxqueue);
+	}
+
+	if (cur_queue >= (uint64_t)limit) {
+		if (IS_ZEBRA_DEBUG_FPM)
+			zlog_debug("%s: Already at a limit(%" PRIu64
+				   ") of internal work, hold off",
+				   __func__, cur_queue);
+		limit = 0;
+	} else if (cur_queue != 0) {
+		if (IS_ZEBRA_DEBUG_FPM)
+			zlog_debug("%s: current queue is %" PRIu64
+				   ", limiting to lesser amount of %" PRIu64,
+				   __func__, cur_queue, limit - cur_queue);
+		limit -= cur_queue;
+	}
+
 	for (counter = 0; counter < limit; counter++) {
 		ctx = dplane_provider_dequeue_in_ctx(prov);
 		if (ctx == NULL)

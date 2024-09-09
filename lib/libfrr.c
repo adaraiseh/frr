@@ -809,6 +809,7 @@ struct event_loop *frr_init(void)
 
 	vty_init(master, di->log_always);
 	lib_cmd_init();
+	debug_init();
 
 	frr_pthread_init();
 #ifdef HAVE_SCRIPTING
@@ -824,8 +825,6 @@ struct event_loop *frr_init(void)
 		flog_warn(EC_LIB_NB_DATABASE,
 			  "%s: failed to initialize northbound database",
 			  __func__);
-
-	debug_init_cli();
 
 	return master;
 }
@@ -1051,7 +1050,17 @@ void frr_config_fork(void)
 	zlog_tls_buffer_init();
 }
 
-void frr_vty_serv_start(void)
+static void frr_check_detach(void)
+{
+	if (nodetach_term || nodetach_daemon)
+		return;
+
+	if (daemon_ctl_sock != -1)
+		close(daemon_ctl_sock);
+	daemon_ctl_sock = -1;
+}
+
+void frr_vty_serv_start(bool check_detach)
 {
 	/* allow explicit override of vty_path in the future
 	 * (not currently set anywhere) */
@@ -1074,6 +1083,9 @@ void frr_vty_serv_start(void)
 	}
 
 	vty_serv_start(di->vty_addr, di->vty_port, di->vty_path);
+
+	if (check_detach)
+		frr_check_detach();
 }
 
 void frr_vty_serv_stop(void)
@@ -1082,16 +1094,6 @@ void frr_vty_serv_stop(void)
 
 	if (di->vty_path)
 		unlink(di->vty_path);
-}
-
-static void frr_check_detach(void)
-{
-	if (nodetach_term || nodetach_daemon)
-		return;
-
-	if (daemon_ctl_sock != -1)
-		close(daemon_ctl_sock);
-	daemon_ctl_sock = -1;
 }
 
 static void frr_terminal_close(int isexit)
@@ -1179,7 +1181,7 @@ void frr_run(struct event_loop *master)
 	char instanceinfo[64] = "";
 
 	if (!(di->flags & FRR_MANUAL_VTY_START))
-		frr_vty_serv_start();
+		frr_vty_serv_start(false);
 
 	if (di->instance)
 		snprintf(instanceinfo, sizeof(instanceinfo), "instance %u ",
@@ -1217,7 +1219,8 @@ void frr_run(struct event_loop *master)
 			close(nullfd);
 		}
 
-		frr_check_detach();
+		if (!(di->flags & FRR_MANUAL_VTY_START))
+			frr_check_detach();
 	}
 
 	/* end fixed stderr startup logging */
@@ -1262,6 +1265,8 @@ void frr_fini(void)
 	zlog_fini();
 	/* frrmod_init -> nothing needed / hooks */
 	rcu_shutdown();
+
+	frrmod_terminate();
 
 	/* also log memstats to stderr when stderr goes to a file*/
 	if (debug_memstats_at_exit || !isatty(STDERR_FILENO))
@@ -1457,7 +1462,10 @@ void _libfrr_version(void)
 	const char banner[] =
 		FRR_FULL_NAME " " FRR_VERSION ".\n"
 		FRR_COPYRIGHT GIT_INFO "\n"
-		"configured with:\n    " FRR_CONFIG_ARGS "\n";
+#ifdef ENABLE_VERSION_BUILD_CONFIG
+		"configured with:\n    " FRR_CONFIG_ARGS "\n"
+#endif
+	;
 	write(1, banner, sizeof(banner) - 1);
 	_exit(0);
 }
@@ -1469,4 +1477,12 @@ const char *frr_vers2str(uint32_t version, char *buf, int buflen)
 		 MINOR_FRRVERSION(version), SUB_FRRVERSION(version));
 
 	return buf;
+}
+
+bool frr_is_daemon(void)
+{
+	if (di)
+		return true;
+
+	return false;
 }

@@ -2191,8 +2191,7 @@ and will share updates.
 .. clicmd:: neighbor PEER solo
 
    This command is used to indicate that routes advertised by the peer
-   should not be reflected back to the peer.  This command only is only
-   meaningful when there is a single peer defined in the peer-group.
+   should not be reflected back to the peer.
 
 .. clicmd:: show [ip] bgp peer-group [json]
 
@@ -2482,7 +2481,7 @@ is 4 octet long. The following format is used to define the community value.
 ``blackhole``
    ``blackhole`` represents well-known communities value ``BLACKHOLE``
    ``0xFFFF029A`` ``65535:666``. :rfc:`7999` documents sending prefixes to
-   EBGP peers and upstream for the purpose of blackholing traffic.
+   peers and upstream for the purpose of blackholing traffic.
    Prefixes tagged with the this community should normally not be
    re-advertised from neighbors of the originating network. Upon receiving
    ``BLACKHOLE`` community from a BGP speaker, ``NO_ADVERTISE`` community

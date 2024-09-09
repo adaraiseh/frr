@@ -215,7 +215,7 @@ static char re_status_output_char(const struct route_entry *re,
 			if (is_fib) {
 				star_p = !!CHECK_FLAG(nhop->flags,
 						      NEXTHOP_FLAG_FIB);
-			} else
+			} else if (CHECK_FLAG(nhop->flags, NEXTHOP_FLAG_ACTIVE))
 				star_p = true;
 		}
 
@@ -891,15 +891,14 @@ static void do_show_route_helper(struct vty *vty, struct zebra_vrf *zvrf,
 	for (rn = route_top(table); rn; rn = srcdest_route_next(rn)) {
 		dest = rib_dest_from_rnode(rn);
 
+		if (longer_prefix_p && !prefix_match(longer_prefix_p, &rn->p))
+			continue;
+
 		RNODE_FOREACH_RE (rn, re) {
 			if (use_fib && re != dest->selected_fib)
 				continue;
 
 			if (tag && re->tag != tag)
-				continue;
-
-			if (longer_prefix_p
-			    && !prefix_match(longer_prefix_p, &rn->p))
 				continue;
 
 			/* This can only be true when the afi is IPv4 */
@@ -1196,6 +1195,7 @@ static void show_nexthop_group_out(struct vty *vty, struct nhg_hash_entry *nhe,
 		json_object_string_add(json, "uptime", up_str);
 		json_object_string_add(json, "vrf",
 				       vrf_id_to_name(nhe->vrf_id));
+		json_object_string_add(json, "afi", afi2str(nhe->afi));
 
 	} else {
 		vty_out(vty, "ID: %u (%s)\n", nhe->id,
@@ -1209,7 +1209,8 @@ static void show_nexthop_group_out(struct vty *vty, struct nhg_hash_entry *nhe,
 		vty_out(vty, "\n");
 
 		vty_out(vty, "     Uptime: %s\n", up_str);
-		vty_out(vty, "     VRF: %s\n", vrf_id_to_name(nhe->vrf_id));
+		vty_out(vty, "     VRF: %s(%s)\n", vrf_id_to_name(nhe->vrf_id),
+			afi2str(nhe->afi));
 	}
 
 	if (CHECK_FLAG(nhe->flags, NEXTHOP_GROUP_VALID)) {
@@ -1228,6 +1229,13 @@ static void show_nexthop_group_out(struct vty *vty, struct nhg_hash_entry *nhe,
 				json_object_boolean_true_add(json, "installed");
 			else
 				vty_out(vty, ", Installed");
+		}
+		if (CHECK_FLAG(nhe->flags, NEXTHOP_GROUP_INITIAL_DELAY_INSTALL)) {
+			if (json)
+				json_object_boolean_true_add(json,
+							     "initialDelay");
+			else
+				vty_out(vty, ", Initial Delay");
 		}
 		if (!json)
 			vty_out(vty, "\n");
@@ -3909,7 +3917,7 @@ DEFUN (show_zebra,
 
 	out = ttable_dump(table, "\n");
 	vty_out(vty, "%s\n", out);
-	XFREE(MTYPE_TMP, out);
+	XFREE(MTYPE_TMP_TTABLE, out);
 
 	ttable_del(table);
 	vty_out(vty,

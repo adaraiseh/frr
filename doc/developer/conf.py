@@ -67,6 +67,13 @@ version = "?.?"
 # The full version, including alpha/beta/rc tags.
 release = "?.?-?"
 
+# Set canonical URL from the Read the Docs Domain
+html_baseurl = os.environ.get("READTHEDOCS_CANONICAL_URL", "")
+
+# Tell Jinja2 templates the build is running on Read the Docs
+if os.environ.get("READTHEDOCS", "") == "True":
+    html_context["READTHEDOCS"] = True
+
 
 # -----------------------------------------------------------------------------
 # Extract values from codebase for substitution into docs.
@@ -96,7 +103,7 @@ replace_vars = {
 
 # extract version information, installation location, other stuff we need to
 # use when building final documents
-val = re.compile('^S\["([^"]+)"\]="(.*)"$')
+val = re.compile(r'^S\["([^"]+)"\]="(.*)"$')
 try:
     with open("../../config.status", "r") as cfgstatus:
         for ln in cfgstatus.readlines():

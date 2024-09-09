@@ -209,7 +209,7 @@ struct attr {
 
 	/* has the route-map changed any attribute?
 	   Used on the peer outbound side. */
-	uint32_t rmap_change_flags;
+	uint16_t rmap_change_flags;
 
 	/* Multi-Protocol Nexthop, AFI IPv6 */
 	struct in6_addr mp_nexthop_global;
@@ -278,7 +278,7 @@ struct attr {
 	struct bgp_attr_encap_subtlv *vnc_subtlvs; /* VNC-specific */
 #endif
 	/* EVPN */
-	struct bgp_route_evpn evpn_overlay;
+	struct bgp_route_evpn *evpn_overlay;
 
 	/* EVPN MAC Mobility sequence number, if any. */
 	uint32_t mm_seqnum;
@@ -293,7 +293,7 @@ struct attr {
 	/* EVPN local router-mac */
 	struct ethaddr rmac;
 
-	uint16_t encap_tunneltype;
+	uint8_t encap_tunneltype;
 
 	/* rmap set table */
 	uint32_t rmap_table_id;
@@ -614,16 +614,16 @@ static inline void bgp_attr_set_cluster(struct attr *attr,
 		UNSET_FLAG(attr->flag, ATTR_FLAG_BIT(BGP_ATTR_CLUSTER_LIST));
 }
 
-static inline const struct bgp_route_evpn *
+static inline struct bgp_route_evpn *
 bgp_attr_get_evpn_overlay(const struct attr *attr)
 {
-	return &attr->evpn_overlay;
+	return attr->evpn_overlay;
 }
 
 static inline void bgp_attr_set_evpn_overlay(struct attr *attr,
-					     struct bgp_route_evpn *eo)
+					     struct bgp_route_evpn *bre)
 {
-	memcpy(&attr->evpn_overlay, eo, sizeof(struct bgp_route_evpn));
+	attr->evpn_overlay = bre;
 }
 
 static inline struct bgp_attr_encap_subtlv *
@@ -646,5 +646,6 @@ bgp_attr_set_vnc_subtlvs(struct attr *attr,
 }
 
 extern bool route_matches_soo(struct bgp_path_info *pi, struct ecommunity *soo);
+extern void evpn_overlay_free(struct bgp_route_evpn *bre);
 
 #endif /* _QUAGGA_BGP_ATTR_H */

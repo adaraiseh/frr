@@ -131,6 +131,7 @@ struct bgp_master {
 #define BGP_OPT_NO_ZEBRA                 (1 << 2)
 #define BGP_OPT_TRAPS_RFC4273            (1 << 3)
 #define BGP_OPT_TRAPS_BGP4MIBV2          (1 << 4)
+#define BGP_OPT_TRAPS_RFC4382		 (1 << 5)
 
 	uint64_t updgrp_idspace;
 	uint64_t subgrp_idspace;
@@ -269,7 +270,7 @@ struct vpn_policy {
 	 */
 	uint32_t tovpn_sid_index; /* unset => set to 0 */
 	struct in6_addr *tovpn_sid;
-	struct srv6_locator_chunk *tovpn_sid_locator;
+	struct srv6_locator *tovpn_sid_locator;
 	uint32_t tovpn_sid_transpose_label;
 	struct in6_addr *tovpn_zebra_vrf_sid_last_sent;
 };
@@ -489,9 +490,7 @@ struct bgp {
 	uint32_t restarted_peers;
 	uint32_t implicit_eors;
 	uint32_t explicit_eors;
-#define BGP_UPDATE_DELAY_DEF              0
-#define BGP_UPDATE_DELAY_MIN              0
-#define BGP_UPDATE_DELAY_MAX              3600
+#define BGP_UPDATE_DELAY_DEFAULT 0
 
 	/* Reference bandwidth for BGP link-bandwidth. Used when
 	 * the LB value has to be computed based on some other
@@ -837,11 +836,12 @@ struct bgp {
 	/* BGP VPN SRv6 backend */
 	bool srv6_enabled;
 	char srv6_locator_name[SRV6_LOCNAME_SIZE];
+	struct srv6_locator *srv6_locator;
 	struct list *srv6_locator_chunks;
 	struct list *srv6_functions;
 	uint32_t tovpn_sid_index; /* unset => set to 0 */
 	struct in6_addr *tovpn_sid;
-	struct srv6_locator_chunk *tovpn_sid_locator;
+	struct srv6_locator *tovpn_sid_locator;
 	uint32_t tovpn_sid_transpose_label;
 	struct in6_addr *tovpn_zebra_vrf_sid_last_sent;
 
@@ -1819,6 +1819,7 @@ struct peer {
 #define PEER_DOWN_SOCKET_ERROR          34U /* Some socket error happened */
 #define PEER_DOWN_RTT_SHUTDOWN          35U /* Automatically shutdown due to RTT */
 #define PEER_DOWN_SUPPRESS_FIB_PENDING	 36U /* Suppress fib pending changed */
+#define PEER_DOWN_PASSWORD_CHANGE	 37U /* neighbor password command */
 	/*
 	 * Remember to update peer_down_str in bgp_fsm.c when you add
 	 * a new value to the last_reset reason
@@ -1827,16 +1828,13 @@ struct peer {
 	struct stream *last_reset_cause;
 
 	/* The kind of route-map Flags.*/
-	uint16_t rmap_type;
+	uint8_t rmap_type;
 #define PEER_RMAP_TYPE_IN             (1U << 0) /* neighbor route-map in */
 #define PEER_RMAP_TYPE_OUT            (1U << 1) /* neighbor route-map out */
 #define PEER_RMAP_TYPE_NETWORK        (1U << 2) /* network route-map */
 #define PEER_RMAP_TYPE_REDISTRIBUTE   (1U << 3) /* redistribute route-map */
 #define PEER_RMAP_TYPE_DEFAULT        (1U << 4) /* default-originate route-map */
-#define PEER_RMAP_TYPE_NOSET          (1U << 5) /* not allow to set commands */
-#define PEER_RMAP_TYPE_IMPORT         (1U << 6) /* neighbor route-map import */
-#define PEER_RMAP_TYPE_EXPORT         (1U << 7) /* neighbor route-map export */
-#define PEER_RMAP_TYPE_AGGREGATE      (1U << 8) /* aggregate-address route-map */
+#define PEER_RMAP_TYPE_AGGREGATE      (1U << 5) /* aggregate-address route-map */
 
 	/** Peer overwrite configuration. */
 	struct bfd_session_config {
@@ -2856,6 +2854,8 @@ extern bool bgp_path_attribute_treat_as_withdraw(struct peer *peer, char *buf,
 						 size_t size);
 
 extern void srv6_function_free(struct bgp_srv6_function *func);
+
+extern void bgp_session_reset_safe(struct peer *peer, struct listnode **nnode);
 
 #ifdef _FRR_ATTRIBUTE_PRINTFRR
 /* clang-format off */
