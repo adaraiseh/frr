@@ -27,6 +27,7 @@
 #include "libfrr.h"
 #include "ns.h"
 #include "libagentx.h"
+#include "routing_nb.h"
 
 #include "bgpd/bgpd.h"
 #include "bgpd/bgp_attr.h"
@@ -51,6 +52,7 @@
 #include "bgpd/bgp_nhg.h"
 #include "bgpd/bgp_routemap_nb.h"
 #include "bgpd/bgp_community_alias.h"
+#include "bgpd/bgp_nb.h"
 
 DEFINE_HOOK(bgp_hook_config_write_vrf, (struct vty *vty, struct vrf *vrf),
 	    (vty, vrf));
@@ -384,9 +386,11 @@ static void bgp_vrf_terminate(void)
 }
 
 static const struct frr_yang_module_info *const bgpd_yang_modules[] = {
+	&frr_bgp_info,
 	&frr_filter_info,
 	&frr_interface_info,
 	&frr_route_map_info,
+	&frr_routing_info,
 	&frr_vrf_info,
 	&frr_bgp_route_map_info,
 };
@@ -531,6 +535,11 @@ int main(int argc, char **argv)
 #ifdef HAVE_SCRIPTING
 	bgp_script_init();
 #endif
+
+	hook_register(routing_conf_event,
+		      routing_control_plane_protocols_name_validate);
+	hook_register(routing_destroy,
+		      bgp_router_destroy);
 
 	/* BGP related initialization.  */
 	bgp_init((unsigned short)instance);
