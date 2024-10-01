@@ -145,6 +145,8 @@ module frr-bgp {
           uses graceful-restart-config;
         }
 
+        uses long-lived-graceful-restart-config;
+
         uses global-update-group-config;
 
         uses global-config-timers;

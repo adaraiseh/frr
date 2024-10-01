@@ -641,39 +641,33 @@ submodule frr-bgp-common-structure {
       description
         "BGP Graceful restart feature.";
       choice mode {
-        case graceful-restart-mode {
-          leaf enable {
-            type boolean;
-            default "false";
-            description
-              "Enable or disable the graceful-restart capability.
-               Setting this value to 'true' enables the graceful-restart
-               and helper both at peer level. Setting this value to 'false'
-               disables graceful restart and helper mode. The peer will inherit
-               global configuration.";
-          }
+        leaf graceful-restart-enable {
+          type boolean;
+          default "false";
+          description
+            "Enable or disable the graceful-restart capability.
+             Setting this value to 'true' enables the graceful-restart
+             and helper both at peer level. Setting this value to 'false'
+             disables graceful restart and helper mode. The peer will inherit
+             global configuration.";
         }
 
-        case graceful-restart-helper-mode {
-          leaf graceful-restart-helper {
-            type boolean;
-            default "false";
-            description
-              "Setting this value to 'true' enables helper mode for the peer
-               Setting this value to 'false' disables the helper mode. The
-               peer will inherit global configuration.";
-          }
+        leaf graceful-restart-helper {
+          type boolean;
+          default "false";
+          description
+            "Setting this value to 'true' enables helper mode for the peer
+             Setting this value to 'false' disables the helper mode. The
+             peer will inherit global configuration.";
         }
 
-        case graceful-restart-disable-mode {
-          leaf graceful-restart-disable {
-            type boolean;
-            default "false";
-            description
-              "Setting this value to 'true' disables the graceful-restart
-               and helper Mode. Setting this value to 'false' causes the peer
-               to inherit global configuration.";
-          }
+        leaf graceful-restart-disable {
+          type boolean;
+          default "false";
+          description
+            "Setting this value to 'true' disables the graceful-restart
+             and helper Mode. Setting this value to 'false' causes the peer
+             to inherit global configuration.";
         }
       }
     }

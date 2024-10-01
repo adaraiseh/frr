@@ -329,6 +329,22 @@ submodule frr-bgp-common {
          nexthop is connected on EBGP sessions.";
     }
 
+    leaf allow-martian-nexthop {
+      type boolean;
+      default "false";
+      description
+        "Allow Martian nexthops to be received in the NLRI from a peer";
+    }
+
+    leaf fast-convergence {
+      type boolean;
+      default "false";
+      description
+        "Fast convergence for bgp sessions, If this is enabled, bgp sessions
+         do not wait for hold timer expiry to bring down the sessions when nexthop
+         becomes unreachable";
+    }
+
     leaf fast-external-failover {
       type boolean;
       default "true";
@@ -386,6 +402,16 @@ submodule frr-bgp-common {
       description
         "When set to 'true' BGP show hostname for nexthop in certain
          command outputs.";
+    }
+
+    leaf hard-administrative-reset {
+      type boolean;
+      default "true";
+      description
+        "Send Hard Reset CEASE Notification for 'Administrative Reset' events.
+         When disabled, and Graceful Restart Notification capability is exchanged
+         between the peers, Graceful Restart procedures apply, and routes will be
+         retained.";
     }
   }
 
@@ -575,29 +601,14 @@ submodule frr-bgp-common {
 
   grouping graceful-restart-config {
     description
-      "Configuration parameters relating to BGP graceful restart.";
-    choice mode {
-      case graceful-restart-mode {
-        leaf enabled {
-          type boolean;
-          default "false";
-          description
-            "Enable or disable the graceful-restart capability. When set to 'true'
-             it will enable graceful restart and helper both globally. When set
-             to 'false' it will enable the default behaviour global helper mode.";
-        }
-      }
-
-      case graceful-restart-disable-mode {
-        leaf graceful-restart-disable {
-          type boolean;
-          default "false";
-          description
-            "When set to 'true' it will disable graceful restart and helper both
-             globally. when set to 'false' it will enable the default behaviour
-             global helper mode.";
-        }
-      }
+    "Configuration parameters relating to BGP graceful restart.";
+    leaf enabled {
+      type boolean;
+      default "false";
+      description
+        "Enable or disable the graceful-restart capability. When set to 'true'
+         it will enable graceful restart and helper both globally. When set
+         to 'false' it will enable the default behaviour global helper mode.";
     }
 
     leaf preserve-fw-entry {
@@ -666,6 +677,32 @@ submodule frr-bgp-common {
         "An upper-bound on the time that helper router holds the
          stale routes in Zebra, When this timer gets expired Zebra
          removes the stale routes.";
+    }
+
+    leaf notification {
+      type boolean;
+      default "false";
+      description
+        "Indicate Graceful Restart support for BGP NOTIFICATION messages";
+    }
+  }
+
+  grouping long-lived-graceful-restart-config {
+    description
+      "BGP Long Lived Graceful restart  configuration.";
+    container long-lived-graceful-restart {
+      description
+        "BGP Long Lived Graceful restart. This capability is advertised only if
+         graceful restart capability is negotiated.";
+      leaf stale-routes-time {
+        type uint32 {
+        range "0..16777215";
+        }
+        default "0";
+        description
+        "specifies the maximum time to wait before purging long-lived stale routes for
+         helper routers. Default is 0, which means the feature is off by default.";
+      }
     }
   }
 
