@@ -77,17 +77,22 @@ module frr-bgp-types {
   typedef as-type {
     type enumeration {
       enum "as-specified" {
-        value 1;
+        value 2;
         description
           "AS has explicitly specified value.";
       }
       enum "internal" {
-        value 2;
+        value 4;
         description
           "Internal BGP peer.";
       }
       enum "external" {
-        value 3;
+        value 8;
+        description
+          "External BGP peer.";
+      }
+       enum "auto" {
+        value 16;
         description
           "External BGP peer.";
       }

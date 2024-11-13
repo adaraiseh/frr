@@ -173,6 +173,12 @@ module frr-bgp {
         }
       }
 
+      container peer-groups {
+        description
+          "Configuration for BGP peer-groups.";
+        uses bgp-peer-group-list;
+      }
+      
       container neighbors {
         description
           "Configuration for BGP neighbors.";
@@ -185,6 +191,16 @@ module frr-bgp {
             type inet:ip-address;
             description
               "The remote IP address of this entry's BGP peer.";
+          }
+
+          uses neighbor-remote-as;
+
+          leaf peer-group {
+            type leafref {
+              path "../../../peer-groups/peer-group/peer-group-name";
+            }
+            description
+              "The peer-group with which this neighbor is associated.";
           }
 
           leaf local-interface {
@@ -201,33 +217,6 @@ module frr-bgp {
             }
             description
               "Neighbor's BGP TCP port number.";
-          }
-
-          leaf peer-group {
-            type leafref {
-              path "../../../peer-groups/peer-group/peer-group-name";
-            }
-            description
-              "The peer-group with which this neighbor is associated.";
-          }
-
-          container neighbor-remote-as {
-            leaf remote-as-type {
-              type frr-bt:as-type;
-              mandatory true;
-              description
-                "Remote AS type.";
-            }
-
-            leaf remote-as {
-              when "../remote-as-type = 'as-specified'";
-              type inet:as-number;
-              description
-                "The remote autonomous system number received in
-                 the BGP OPEN message.";
-              reference
-                "RFC 4271";
-            }
           }
 
           uses neighbor-parameters;
@@ -274,12 +263,6 @@ module frr-bgp {
             }
           }
         }
-      }
-
-      container peer-groups {
-        description
-          "Configuration for BGP peer-groups.";
-        uses bgp-peer-group-list;
       }
     }
   }

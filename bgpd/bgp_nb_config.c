@@ -13,6 +13,9 @@
 #include "bgpd/bgp_fsm.h"
 #include "bgpd/bgp_addpath.h"
 #include "bgpd/bgp_updgrp.h"
+#include "bgpd/bgp_vty.h"
+#include "bgpd/bgp_debug.h"
+#include "bgpd/bgp_packet.h"
 
 DEFINE_HOOK(bgp_snmp_init_stats, (struct bgp * bgp), (bgp));
 
@@ -27,6 +30,357 @@ int routing_control_plane_protocols_name_validate(struct nb_cb_create_args *args
 		return NB_ERR_VALIDATION;
 	}
 	return NB_OK;
+}
+
+struct confed_member_arg {
+		as_t remote_as;
+		bool is_confed_peer;
+};
+
+/* Callback function for yang_dnode_iterate */
+static int confed_member_iter_cb(const struct lyd_node *member_as_dnode,
+				 void *arg_ptr)
+{
+	struct confed_member_arg *member_arg =
+		(struct confed_member_arg *)arg_ptr;
+	as_t member_as = yang_dnode_get_uint32(member_as_dnode, NULL);
+
+	if (member_as == member_arg->remote_as) {
+		member_arg->is_confed_peer = true;
+		return YANG_ITER_STOP;
+	}
+
+	return YANG_ITER_CONTINUE;
+}
+
+static bool bgp_confederation_peers_check_nb(as_t remote_as, const struct lyd_node *bgp_dnode)
+{
+	if (!bgp_dnode)
+		return false;
+	// TODO AMJ remove struct
+	struct confed_member_arg confed_arg = { remote_as, false };
+
+	if (yang_dnode_exists(bgp_dnode, "./global/confederation/member-as")) {
+		yang_dnode_iterate(confed_member_iter_cb, &confed_arg, bgp_dnode,
+				   "./global/confederation/member-as");
+	}
+
+	return confed_arg.is_confed_peer;
+}
+
+static enum bgp_peer_sort peer_dnode_calc_sort(const struct lyd_node *peer_dnode, as_t as, enum peer_asn_type as_type);
+struct pgroup_memeber_arg {
+    const char *peer_group_name;
+    enum bgp_peer_sort member_sort;
+};
+
+/* Callback function for yang_dnode_iterate */
+static int pgroup_member_sort_cb(const struct lyd_node *neighbor_dnode, void *arg_ptr)
+{
+    struct pgroup_memeber_arg *member_arg = (struct pgroup_memeber_arg *)arg_ptr;
+    const char *neighbor_peer_group = NULL;
+
+    if (yang_dnode_exists(neighbor_dnode, "./peer-group"))
+		neighbor_peer_group = yang_dnode_get_string(neighbor_dnode,
+							    "./peer-group");
+
+    if (neighbor_peer_group &&
+	strcmp(neighbor_peer_group, member_arg->peer_group_name) == 0) {
+		/* Found a member peer; determine its sort */
+		as_t member_as = 0;
+		enum peer_asn_type memeber_as_type = 0; // TODO AMJ review AS_UNSPECIFIED
+		if (yang_dnode_exists(neighbor_dnode,
+				      "./neighbor-remote-as/remote-as"))
+			member_as =
+				yang_dnode_get_uint32(neighbor_dnode,
+						      "./neighbor-remote-as/remote-as");
+		if (yang_dnode_exists(neighbor_dnode,
+				      "./neighbor-remote-as/remote-as-type"))
+			memeber_as_type =
+				yang_dnode_get_enum(neighbor_dnode,
+						    "./neighbor-remote-as/remote-as-type");
+
+		enum bgp_peer_sort member_sort =
+			peer_dnode_calc_sort(neighbor_dnode, member_as,
+					     memeber_as_type);
+
+		member_arg->member_sort = member_sort;
+		return YANG_ITER_STOP;
+    }
+
+    return YANG_ITER_CONTINUE;
+}
+
+
+/* Replicate peer_calc_sort logic using YANG data */
+static enum bgp_peer_sort peer_dnode_calc_sort(const struct lyd_node *peer_dnode, as_t remote_as, enum peer_asn_type as_type)
+{
+	as_t bgp_as;
+	as_t local_as;
+	bool is_peer_group = false;
+	bool confederation = false;
+	as_t confed_id = 0;
+	const char *peer_group_name = NULL;
+	const struct lyd_node *bgp_dnode = NULL;
+
+	bgp_dnode = yang_dnode_get_parent(peer_dnode, "bgp");
+
+	if (yang_dnode_exists(bgp_dnode, "./global/local-as")) {
+		bgp_as = yang_dnode_get_uint32(bgp_dnode, "./global/local-as");
+	} else {
+		return BGP_PEER_UNSPECIFIED;
+	}
+
+	if (yang_dnode_exists(peer_dnode, "./local-as/local-as"))
+		local_as = yang_dnode_get_uint32(peer_dnode,
+						 "./local-as/local-as");
+	else
+		local_as = bgp_as; // TODO AMJ this seems to be wrong, could be 0 or confd_id
+
+	if (strcmp(peer_dnode->schema->name, "peer-group") == 0) {
+		is_peer_group = true;
+	}
+
+	if (yang_dnode_exists(bgp_dnode, "./global/confederation/identifier")) {
+		confederation = true;
+		confed_id =
+			yang_dnode_get_uint32(bgp_dnode,
+					      "./global/confederation/identifier");
+	}
+
+	/* peer-group */
+	if (is_peer_group) {
+		peer_group_name = yang_dnode_get_string(peer_dnode,
+							"./peer-group-name");
+		if (CHECK_FLAG(as_type, AS_INTERNAL))
+			return BGP_PEER_IBGP;
+
+		if (CHECK_FLAG(as_type, AS_EXTERNAL))
+			return BGP_PEER_EBGP;
+
+		else if (as_type == AS_SPECIFIED && remote_as)
+			return (local_as == remote_as) ? BGP_PEER_IBGP
+						       : BGP_PEER_EBGP;
+		else {
+			// TODO AMJ remove struct
+			struct pgroup_memeber_arg arg = { peer_group_name,
+							 BGP_PEER_UNSPECIFIED };
+
+			yang_dnode_iterate(pgroup_member_sort_cb, &arg,
+					   bgp_dnode, "./neighbors/*");
+			if (arg.member_sort != BGP_PEER_UNSPECIFIED)
+				return arg.member_sort;
+			return BGP_PEER_INTERNAL;
+		}
+	}
+
+	/* Normal peer */
+	if (confederation) {
+		if (local_as == 0)
+			return BGP_PEER_INTERNAL;
+
+		if (local_as == remote_as) {
+			if (bgp_as == confed_id) {
+				if (local_as == bgp_as)
+					return BGP_PEER_IBGP;
+				else
+					return BGP_PEER_EBGP;
+			} else {
+				if (local_as == confed_id)
+					return BGP_PEER_EBGP;
+				else
+					return BGP_PEER_IBGP;
+			}
+		}
+
+		/* Check if remote_as is in confederation member-as list */
+		if (bgp_confederation_peers_check_nb(remote_as, bgp_dnode))
+			return BGP_PEER_CONFED;
+
+		return BGP_PEER_EBGP;
+	} else {
+		if (as_type == AS_UNSPECIFIED) {
+			/* Check if in peer-group with AS information */
+			if (yang_dnode_exists(peer_dnode, "./peer-group")) {
+				const char *group_name =
+					yang_dnode_get_string(peer_dnode,
+							      "./peer-group");
+				const struct lyd_node *group_dnode =
+					yang_dnode_getf(bgp_dnode,
+							"./peer-groups/peer-group[peer-group-name='%s']",
+							group_name);
+
+				if (group_dnode) {
+					enum peer_asn_type group_as_type = 0; // TODO AMJ AS_UNSPECIFIED worked ?
+					as_t group_remote_as = 0;
+					as_t group_local_as = bgp_as;
+					printf("if peer group\n");
+					if (yang_dnode_exists(group_dnode,
+							      "./local-as/local-as")) {
+						group_local_as = yang_dnode_get_uint32(
+							group_dnode,
+							"./local-as/local-as");
+					}
+
+					if (yang_dnode_exists(group_dnode,
+							      "./neighbor-remote-as/remote-as"))
+						group_remote_as = yang_dnode_get_uint32(
+							group_dnode,
+							"./neighbor-remote-as/remote-as");
+
+					if (yang_dnode_exists(group_dnode,
+							      "./neighbor-remote-as/remote-as-type"))
+						group_as_type = yang_dnode_get_enum(
+							group_dnode,
+							"./neighbor-remote-as/remote-as-type");
+
+					if (group_as_type != AS_UNSPECIFIED) {
+						if (CHECK_FLAG(group_as_type, AS_SPECIFIED)) {
+							if (group_local_as ==
+							    group_remote_as)
+								return BGP_PEER_IBGP;
+							else
+								return BGP_PEER_EBGP;
+						} else if (CHECK_FLAG(group_as_type,
+								      AS_INTERNAL))
+							return BGP_PEER_IBGP;
+						else if (CHECK_FLAG(group_as_type,
+								    AS_EXTERNAL))
+							return BGP_PEER_EBGP;
+					}
+				}
+			}
+			/* No AS information anywhere, let caller know */
+			return BGP_PEER_UNSPECIFIED;
+		} else if (as_type != AS_SPECIFIED) {
+			if (CHECK_FLAG(as_type, AS_INTERNAL)){
+				return BGP_PEER_IBGP;
+			}
+				
+			else if (CHECK_FLAG(as_type, AS_EXTERNAL)){
+				return BGP_PEER_EBGP;
+			}
+		}
+
+		if (local_as == 0)
+			return BGP_PEER_INTERNAL;
+		else
+			return (local_as == remote_as) ? BGP_PEER_IBGP
+						       : BGP_PEER_EBGP;
+	}
+}
+
+int bgp_nb_errmsg_return(char *errmsg, size_t errmsg_len, int ret)
+{
+	const char *str = NULL;
+
+	switch (ret) {
+	case BGP_ERR_INVALID_VALUE:
+		str = "Invalid value";
+		break;
+	case BGP_ERR_INVALID_FLAG:
+		str = "Invalid flag";
+		break;
+	case BGP_ERR_PEER_GROUP_SHUTDOWN:
+		str = "Peer-group has been shutdown. Activate the peer-group first";
+		break;
+	case BGP_ERR_PEER_FLAG_CONFLICT:
+		str = "Can't set override-capability and strict-capability-match at the same time";
+		break;
+	case BGP_ERR_PEER_GROUP_NO_REMOTE_AS:
+		str = "Specify remote-as or peer-group remote AS first";
+		break;
+	case BGP_ERR_PEER_GROUP_CANT_CHANGE:
+		str = "Cannot change the peer-group. Deconfigure first";
+		break;
+	case BGP_ERR_PEER_GROUP_MISMATCH:
+		str = "Peer is not a member of this peer-group";
+		break;
+	case BGP_ERR_PEER_FILTER_CONFLICT:
+		str = "Prefix/distribute list can not co-exist";
+		break;
+	case BGP_ERR_NOT_INTERNAL_PEER:
+		str = "Invalid command. Not an internal neighbor";
+		break;
+	case BGP_ERR_REMOVE_PRIVATE_AS:
+		str = "remove-private-AS cannot be configured for IBGP peers";
+		break;
+	case BGP_ERR_CANNOT_HAVE_LOCAL_AS_SAME_AS:
+		str = "Cannot have local-as same as BGP AS number";
+		break;
+	case BGP_ERR_TCPSIG_FAILED:
+		str = "Error while applying TCP-Sig to session(s)";
+		break;
+	case BGP_ERR_NO_EBGP_MULTIHOP_WITH_TTLHACK:
+		str = "ebgp-multihop and ttl-security cannot be configured together";
+		break;
+	case BGP_ERR_NO_IBGP_WITH_TTLHACK:
+		str = "ttl-security only allowed for EBGP peers";
+		break;
+	case BGP_ERR_AS_OVERRIDE:
+		str = "as-override cannot be configured for IBGP peers";
+		break;
+	case BGP_ERR_INVALID_DYNAMIC_NEIGHBORS_LIMIT:
+		str = "Invalid limit for number of dynamic neighbors";
+		break;
+	case BGP_ERR_DYNAMIC_NEIGHBORS_RANGE_EXISTS:
+		str = "Dynamic neighbor listen range already exists";
+		break;
+	case BGP_ERR_INVALID_FOR_DYNAMIC_PEER:
+		str = "Operation not allowed on a dynamic neighbor";
+		break;
+	case BGP_ERR_INVALID_FOR_DIRECT_PEER:
+		str = "Operation not allowed on a directly connected neighbor";
+		break;
+	case BGP_ERR_PEER_SAFI_CONFLICT:
+		str = "Cannot activate peer for both 'ipv4 unicast' and 'ipv4 labeled-unicast'";
+		break;
+	case BGP_ERR_GR_INVALID_CMD:
+		str = "The Graceful Restart command used is not valid at this moment.";
+		break;
+	case BGP_ERR_GR_OPERATION_FAILED:
+		str = "The Graceful Restart Operation failed due to an err.";
+		break;
+	case BGP_ERR_PEER_GROUP_MEMBER:
+		str = "Peer-group member cannot override remote-as of peer-group.";
+		break;
+	case BGP_ERR_PEER_GROUP_PEER_TYPE_DIFFERENT:
+		str = "Peer-group members must be all internal or all external.";
+		break;
+	case BGP_ERR_DYNAMIC_NEIGHBORS_RANGE_NOT_FOUND:
+		str = "Range specified cannot be deleted because it is not part of current config.";
+		break;
+	case BGP_ERR_INSTANCE_MISMATCH:
+		str = "Instance specified does not match the current instance.";
+		break;
+	case BGP_ERR_NO_INTERFACE_CONFIG:
+		str = "Interface specified is not being used for interface based peer.";
+		break;
+	case BGP_ERR_SOFT_RECONFIG_UNCONFIGURED:
+		str = "No configuration already specified for soft reconfiguration.";
+		break;
+	case BGP_ERR_AS_MISMATCH:
+		str = "BGP is already running.";
+		break;
+	case BGP_ERR_AF_UNCONFIGURED:
+		str = "AFI/SAFI specified is not currently configured.";
+		break;
+	case BGP_ERR_INVALID_AS:
+		str = "Confederation AS specified is the same AS as our AS.";
+		break;
+	case BGP_ERR_INVALID_ROLE_NAME:
+		str = "Invalid role name";
+		break;
+	case BGP_ERR_INVALID_INTERNAL_ROLE:
+		str = "External roles can be set only on eBGP session";
+		break;
+	}
+	if (str) {
+		snprintf(errmsg, errmsg_len, "%s", str);
+		return -1;
+	}
+
+	return 0;
 }
 
 /*
@@ -7690,12 +8044,52 @@ int routing_control_plane_protocols_control_plane_protocol_bgp_global_afi_safis_
 int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbor_create(
 	struct nb_cb_create_args *args)
 {
+	struct bgp *bgp;
+	const char *peer_str;
+	struct peer *peer = NULL;
+	union sockunion su;
 	switch (args->event) {
 	case NB_EV_VALIDATE:
+		if (!yang_dnode_existsf(args->dnode, "%s",
+					"./neighbor-remote-as/remote-as-type") &&
+		    !yang_dnode_existsf(args->dnode, "%s", "./peer-group")) {
+			snprintf(args->errmsg, args->errmsg_len,
+				 "Configure remote-as or peer-group first");
+			return NB_ERR_VALIDATION;
+		}
+
+		/* interfaces info is not avaible via yang data, validation uses operational data */
+		bgp = nb_running_get_entry(args->dnode, NULL, false);
+		if (!bgp)
+			return NB_OK;
+		peer_str = yang_dnode_get_string(args->dnode,
+						 "./remote-address");
+		str2sockunion(peer_str, &su);
+		if (peer_address_self_check(bgp, &su)) {
+			zlog_warn(
+				"Can not configure the local system as neighbor");
+			snprintf(args->errmsg, args->errmsg_len,
+				 "Can not configure the local system as neighbor");
+			return NB_ERR_VALIDATION;
+		}
+
+		peer = peer_lookup(bgp, &su);
+		if (peer) {
+			if (peer_dynamic_neighbor(peer)) {
+				zlog_warn("%pBP: Operation not allowed on a dynamic neighbor",
+					  peer);
+				snprintf(args->errmsg, args->errmsg_len,
+					 "Operation not allowed on a dynamic neighbor\n");
+				return NB_ERR_VALIDATION;
+			}
+		}
+		break;
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
+		break;
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
+		// TODO AMJ
+		// MUST peer_address_self_check and peer_dynamic_neighbor when bgp becomes avaiable
 		break;
 	}
 
@@ -7708,15 +8102,32 @@ void routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighb
 	/* TODO: this cli callback is optional; the cli output may not need to be done at each node. */
 }
 
+// TODO general review
 int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbor_destroy(
 	struct nb_cb_destroy_args *args)
 {
+	struct peer *peer = NULL;
+	struct peer *other;
 	switch (args->event) {
 	case NB_EV_VALIDATE:
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
+		break;
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
+		peer = nb_running_get_entry_non_rec(args->dnode, NULL, false);
+		if (peer) {
+			other = peer->doppelganger;
+			if (CHECK_FLAG(peer->flags, PEER_FLAG_CAPABILITY_ENHE))
+				bgp_zebra_terminate_radv(peer->bgp, peer);
+
+			peer_notify_unconfig(peer);
+			peer_delete(peer);
+			if (other && other->connection->status != Deleted) {
+				peer_notify_unconfig(other);
+				peer_delete(other);
+			}
+			nb_running_unset_entry(args->dnode);
+		}
 		break;
 	}
 
@@ -7765,15 +8176,25 @@ int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbo
 /*
  * XPath: /frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/local-port
  */
+// TODO AMJ remove from first commit
 int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbor_local_port_modify(
 	struct nb_cb_modify_args *args)
 {
+	struct peer *peer;
+	uint16_t port;
+	const struct lyd_node *peer_dnode;
+
 	switch (args->event) {
 	case NB_EV_VALIDATE:
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
+		break;
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
+		peer_dnode = yang_dnode_get_parent(args->dnode, "neighbor");
+		peer = nb_running_get_entry_non_rec(peer_dnode, NULL, true);
+
+		port = yang_dnode_get_uint16(args->dnode, NULL);
+		peer_port_set(peer, port);
 		break;
 	}
 
@@ -7801,18 +8222,278 @@ int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbo
 	return NB_OK;
 }
 
+// TODO AMJ general review
+static int peer_set_pgroup_validate(const struct lyd_node *peer_dnode)
+{
+	const struct lyd_node *bgp_dnode, *group_dnode;
+	const char *group_name = NULL;
+	char group_xpath[XPATH_MAXLEN];
+
+	group_name = yang_dnode_get_string(peer_dnode, "./peer-group");
+
+	bgp_dnode = yang_dnode_get_parent(peer_dnode, "bgp");
+	snprintf(group_xpath, sizeof(group_xpath), FRR_BGP_PEER_GROUP_XPATH,
+		 group_name, "");
+
+	group_dnode = yang_dnode_get(bgp_dnode, group_xpath);
+
+	/* Check if the neighbor already belongs to a peer-group */
+	char *peer_xpath = yang_dnode_get_path(peer_dnode, NULL, XPATH_MAXLEN);
+	if (yang_dnode_existsf(running_config->dnode, "%s%s", peer_xpath,
+			       "/peer-group"))
+		return BGP_ERR_PEER_GROUP_CANT_CHANGE;
+
+	as_t group_as = 0, peer_as = 0;
+	enum peer_asn_type group_as_type = 0; /* initial value of group as_type is 0 */ // TODO AMJ
+	enum peer_asn_type peer_as_type = AS_UNSPECIFIED;
+	if (yang_dnode_exists(peer_dnode, "./neighbor-remote-as/remote-as-type"))
+		peer_as_type =
+			yang_dnode_get_enum(peer_dnode,
+					      "./neighbor-remote-as/remote-as-type");
+	if (yang_dnode_exists(peer_dnode, "./neighbor-remote-as/remote-as"))
+		peer_as =
+			yang_dnode_get_uint32(peer_dnode,
+					    "./neighbor-remote-as/remote-as");
+	if (yang_dnode_exists(group_dnode,
+			      "./neighbor-remote-as/remote-as-type"))
+		group_as_type =
+			yang_dnode_get_enum(group_dnode,
+					    "./neighbor-remote-as/remote-as-type");
+	if (yang_dnode_exists(group_dnode, "./neighbor-remote-as/remote-as"))
+		group_as =
+			yang_dnode_get_uint32(group_dnode,
+					      "./neighbor-remote-as/remote-as");
+	
+	enum bgp_peer_sort peer_sort;
+	/* The peer has not specified a remote-as, inherit it from the
+	 * peer-group */
+	if (peer_as_type == AS_UNSPECIFIED) // TODO AMJ review, p_as_t either 0 or actual value
+		peer_sort = peer_dnode_calc_sort(peer_dnode, group_as,
+						 group_as_type);
+	else
+		peer_sort = peer_dnode_calc_sort(peer_dnode, peer_as,
+						 peer_as_type);
+
+	if (!group_as && peer_sort != BGP_PEER_UNSPECIFIED) {
+		enum bgp_peer_sort group_sort =
+			peer_dnode_calc_sort(group_dnode, group_as, group_as_type);
+		if (group_sort != BGP_PEER_INTERNAL && group_sort != peer_sort)
+			return BGP_ERR_PEER_GROUP_PEER_TYPE_DIFFERENT;
+	} else {
+		printf("peer sort %d\n", peer_sort);
+	}
+
+	return 0;
+}
+
+static int peer_remote_as_validate(const struct lyd_node *peer_dnode)
+{
+	const char *group_name;
+	char group_as_xpath[XPATH_MAXLEN];
+	char group_as_type_xpath[XPATH_MAXLEN];
+
+	const struct lyd_node *bgp_dnode, *group_dnode;
+
+	as_t peer_as = 0, group_as = 0;
+	enum peer_asn_type peer_as_type;
+	enum peer_asn_type group_as_type = 0; /* initial value of group as_type is 0 */
+
+	peer_as_type =
+		yang_dnode_get_enum(peer_dnode,
+				    "./neighbor-remote-as/remote-as-type");
+	if (yang_dnode_exists(peer_dnode, "./neighbor-remote-as/remote-as"))
+		peer_as =
+			yang_dnode_get_uint32(peer_dnode,
+					      "./neighbor-remote-as/remote-as");
+
+	if (yang_dnode_exists(peer_dnode, "./peer-group")) {
+		group_name = yang_dnode_get_string(peer_dnode, "./peer-group");
+		bgp_dnode = yang_dnode_get_parent(peer_dnode, "bgp");
+		group_dnode = yang_dnode_getf(bgp_dnode,
+					      FRR_BGP_PEER_GROUP_XPATH,
+					      group_name, "");
+
+		group_name = yang_dnode_get_string(group_dnode,
+						   "./peer-group-name");
+		snprintf(group_as_type_xpath, XPATH_MAXLEN,
+			 FRR_BGP_PEER_GROUP_XPATH, group_name,
+			 "/neighbor-remote-as/remote-as-type");
+		snprintf(group_as_xpath, XPATH_MAXLEN, FRR_BGP_PEER_GROUP_XPATH,
+			 group_name, "/neighbor-remote-as/remote-as");
+
+		/* peer-group already has AS number/internal/external */
+		if (yang_dnode_exists(bgp_dnode, group_as_xpath) ||
+		    yang_dnode_exists(bgp_dnode, group_as_type_xpath)) {
+			return BGP_ERR_PEER_GROUP_MEMBER;
+		}
+
+		if (yang_dnode_exists(group_dnode,
+				      "./neighbor-remote-as/remote-as-type"))
+			group_as_type =
+				yang_dnode_get_enum(group_dnode,
+						    "./neighbor-remote-as/remote-as-type");
+		if (yang_dnode_exists(group_dnode,
+				      "./neighbor-remote-as/remote-as"))
+			group_as =
+				yang_dnode_get_uint32(group_dnode,
+						      "./neighbor-remote-as/remote-as");
+
+		enum bgp_peer_sort group_sort_type =
+			peer_dnode_calc_sort(group_dnode, group_as,
+					     group_as_type);
+
+		/* Explicit AS numbers used, compare AS numbers */
+		as_t bgp_as = yang_dnode_get_uint32(bgp_dnode,
+						    "./global/local-as");
+		if (peer_as_type == AS_SPECIFIED) {
+			if (((group_sort_type == BGP_PEER_IBGP) &&
+			     (bgp_as != peer_as)) ||
+			    ((group_sort_type == BGP_PEER_EBGP) &&
+			     (bgp_as == peer_as))) {
+				return BGP_ERR_PEER_GROUP_PEER_TYPE_DIFFERENT;
+			}
+		} else {
+			/* internal/external used, compare as-types */
+			if (((group_sort_type == BGP_PEER_IBGP) &&
+			     !CHECK_FLAG(peer_as_type, AS_INTERNAL)) ||
+			    ((group_sort_type == BGP_PEER_EBGP) &&
+			     !CHECK_FLAG(peer_as_type, AS_EXTERNAL))) {
+				return BGP_ERR_PEER_GROUP_PEER_TYPE_DIFFERENT;
+			}
+		}
+	}
+	return 0;
+}
+
+static void peer_remote_as_set(const struct lyd_node *peer_dnode)
+{
+	const struct lyd_node *bgp_dnode;
+	struct bgp *bgp;
+	const char *peer_str = NULL, *as_str;
+	char as_pretty[ASN_STRING_MAX_SIZE * 3];
+	union sockunion su;
+	struct peer *peer = NULL;
+	as_t as = 0;
+	enum peer_asn_type as_type = AS_UNSPECIFIED;
+	int ret;
+
+	as_type = yang_dnode_get_enum(peer_dnode,
+				      "./neighbor-remote-as/remote-as-type");
+
+	bgp_dnode = yang_dnode_get_parent(peer_dnode, "bgp");
+	bgp = nb_running_get_entry(bgp_dnode, NULL, true);
+	if (yang_dnode_exists(peer_dnode, "./remote-address"))
+		peer_str = yang_dnode_get_string(peer_dnode, "./remote-address");
+	else if (yang_dnode_exists(peer_dnode, "./interface"))
+		peer_str = yang_dnode_get_string(peer_dnode, "./interface");
+
+	ret = str2sockunion(peer_str, &su);
+
+	if (yang_dnode_exists(peer_dnode, "./neighbor-remote-as/remote-as")) {
+		as = yang_dnode_get_uint32(peer_dnode,
+					   "./neighbor-remote-as/remote-as");
+		asn_asn2string(&as, as_pretty, sizeof(as_pretty),
+			       bgp->asnotation);
+		as_str = as_pretty;
+	} else
+		as_str =
+			yang_dnode_get_string(peer_dnode,
+					      "./neighbor-remote-as/remote-as-type");
+
+	peer = nb_running_get_entry_non_rec(peer_dnode, NULL, false);
+
+	if (peer) {
+		/* Existing peer's AS number change. */
+		if (((peer->as_type == AS_SPECIFIED) && peer->as != as) ||
+		    (peer->as_type != as_type))
+			peer_as_change(peer, as, as_type, as_str);
+	} else {
+		bool confederation = false;
+		as_t local_as, confed_id = 0, bgp_as;
+
+		// TODO AMJ remove after testing CLI
+		if (ret < 0){
+			printf("we should never get here, BGP_ERR_NO_INTERFACE_CONFIG\n");
+			return;
+		}
+
+		if (yang_dnode_exists(bgp_dnode,
+				      "./global/confederation/identifier")) {
+			confederation = true;
+			confed_id =
+				yang_dnode_get_uint32(bgp_dnode,
+						      "./global/confederation/identifier");
+		}
+
+		bgp_as = yang_dnode_get_uint32(bgp_dnode, "./global/local-as");
+		/* If the peer is not part of our confederation, and its not an
+		   iBGP peer then spoof the source AS */
+		if (confederation &&
+		    !bgp_confederation_peers_check_nb(as, bgp_dnode) && as &&
+		    bgp->as != as)
+			local_as = confed_id;
+		else
+			local_as = bgp_as;
+
+		peer = peer_create(&su, NULL, bgp, local_as, as, as_type, NULL,
+				   true, as_str);
+		nb_running_set_entry(peer_dnode, peer);
+	}
+}
+
+
 /*
  * XPath: /frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/peer-group
  */
 int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbor_peer_group_modify(
 	struct nb_cb_modify_args *args)
 {
+	struct bgp *bgp;
+	struct peer *peer;
+	struct peer_group *group;
+	const struct lyd_node *bgp_dnode, *peer_dnode, *group_dnode;
+	const char *group_name, *peer_str;
+	char group_xpath[XPATH_MAXLEN];
+	int ret;
+	as_t as;
+	union sockunion su;
+
 	switch (args->event) {
 	case NB_EV_VALIDATE:
+		peer_dnode = yang_dnode_get_parent(args->dnode, "neighbor");
+		ret = peer_set_pgroup_validate(peer_dnode);
+		if (bgp_nb_errmsg_return(args->errmsg, args->errmsg_len, ret) <
+		    0)
+			return NB_ERR_VALIDATION;
+
+		break;
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
+		break;
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
+		group_name = yang_dnode_get_string(args->dnode, NULL);
+
+		bgp_dnode = yang_dnode_get_parent(args->dnode, "bgp");
+		bgp = nb_running_get_entry_non_rec(bgp_dnode, NULL, true);
+
+		peer_dnode = yang_dnode_get_parent(args->dnode, "neighbor");
+		peer = nb_running_get_entry_non_rec(peer_dnode, NULL, false);
+		peer_str = yang_dnode_get_string(peer_dnode, "./remote-address");
+
+		snprintf(group_xpath, XPATH_MAXLEN, FRR_BGP_PEER_GROUP_XPATH,
+			 group_name, "");
+		group_dnode = yang_dnode_get(bgp_dnode, group_xpath);
+		group = nb_running_get_entry_non_rec(group_dnode, NULL, true);
+
+		str2sockunion(peer_str, &su);
+
+		ret = peer_group_bind(bgp, &su, peer, group, &as);
+		if (bgp_nb_errmsg_return(args->errmsg, args->errmsg_len, ret) <
+		    0)
+			return NB_ERR_INCONSISTENCY;
+		peer = peer_lookup(bgp, &su);
+
+		nb_running_set_entry(peer_dnode, peer);
 		break;
 	}
 
@@ -7825,6 +8506,7 @@ void routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighb
 	/* TODO: this cli callback is optional; the cli output may not need to be done at each node. */
 }
 
+// TODO AMJ add destroy
 int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbor_peer_group_destroy(
 	struct nb_cb_destroy_args *args)
 {
@@ -7840,18 +8522,43 @@ int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbo
 	return NB_OK;
 }
 
+// TODO AMJ do 'neighbor' list needs manadatory YANG ?
+/*
+ * XPath: /frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/neighbor-remote-as
+ */
+void routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbor_neighbor_remote_as_apply_finish(
+	struct nb_cb_apply_finish_args *args){
+	const struct lyd_node *peer_dnode;
+	peer_dnode = yang_dnode_get_parent(args->dnode, "neighbor");
+	peer_remote_as_set(peer_dnode);
+}
+
 /*
  * XPath: /frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/neighbor-remote-as/remote-as-type
  */
 int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbor_neighbor_remote_as_remote_as_type_modify(
 	struct nb_cb_modify_args *args)
 {
+	const struct lyd_node *peer_dnode;
+	int ret = 0;
+
 	switch (args->event) {
 	case NB_EV_VALIDATE:
+		/* when remote_as is specified peer will be
+		 * validated in remote_as_modify callback */
+		if (yang_dnode_exists(args->dnode, "../remote-as"))
+			return NB_OK;
+
+		peer_dnode = yang_dnode_get_parent(args->dnode, "neighbor");
+		ret = peer_remote_as_validate(peer_dnode);
+		if (bgp_nb_errmsg_return(args->errmsg, args->errmsg_len, ret) <
+		    0)
+			return NB_ERR_VALIDATION;
+
+		break;
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
 		break;
 	}
 
@@ -7864,11 +8571,9 @@ void routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighb
 	/* TODO: this cli callback is optional; the cli output may not need to be done at each node. */
 }
 
-/*
- * XPath: /frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/neighbor-remote-as/remote-as
- */
-int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbor_neighbor_remote_as_remote_as_modify(
-	struct nb_cb_modify_args *args)
+// TODO AMJ add destroy
+int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbor_neighbor_remote_as_remote_as_type_destroy(
+	struct nb_cb_destroy_args *args)
 {
 	switch (args->event) {
 	case NB_EV_VALIDATE:
@@ -7882,12 +8587,40 @@ int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbo
 	return NB_OK;
 }
 
+/*
+ * XPath: /frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/neighbor-remote-as/remote-as
+ */
+int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbor_neighbor_remote_as_remote_as_modify(
+	struct nb_cb_modify_args *args)
+{
+	int ret;
+	const struct lyd_node *peer_dnode;
+
+	switch (args->event) {
+	case NB_EV_VALIDATE:
+		peer_dnode = yang_dnode_get_parent(args->dnode, "neighbor");
+		ret = peer_remote_as_validate(peer_dnode);
+		if (bgp_nb_errmsg_return(args->errmsg, args->errmsg_len, ret) <
+		    0)
+			return NB_ERR_VALIDATION;
+
+		break;
+	case NB_EV_PREPARE:
+	case NB_EV_ABORT:
+	case NB_EV_APPLY:
+		break;
+	}
+
+	return NB_OK;
+}
+
 void routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbor_neighbor_remote_as_remote_as_cli_write(
 	struct vty *vty, const struct lyd_node *dnode, bool show_defaults)
 {
 	/* TODO: this cli callback is optional; the cli output may not need to be done at each node. */
 }
 
+// TODO AMJ add destroy
 int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbor_neighbor_remote_as_remote_as_destroy(
 	struct nb_cb_destroy_args *args)
 {
@@ -7896,7 +8629,6 @@ int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbo
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
 		break;
 	}
 
@@ -22012,15 +22744,87 @@ void routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighb
 /*
  * XPath: /frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/unnumbered-neighbor
  */
+// TODO AMJ general review
 int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumbered_neighbor_create(
 	struct nb_cb_create_args *args)
 {
+	struct bgp *bgp;
+	struct peer *peer = NULL;
+	const struct lyd_node *bgp_dnode;
+	const char *conf_if, *as_str = NULL;
+	char group_xpath[XPATH_MAXLEN];
+	enum peer_asn_type as_type = AS_UNSPECIFIED;
+	as_t as = 0;
+	bool v6only = false;
+
 	switch (args->event) {
 	case NB_EV_VALIDATE:
+		conf_if = yang_dnode_get_string(args->dnode, "./interface");
+		bgp_dnode = yang_dnode_get_parent(args->dnode, "bgp");
+
+		/* Check for name conflict with peer-group */
+		snprintf(group_xpath, sizeof(group_xpath),
+			 FRR_BGP_PEER_GROUP_XPATH, conf_if, "");
+		if (yang_dnode_exists(bgp_dnode, group_xpath)) {
+			snprintf(args->errmsg, args->errmsg_len,
+				 "%% Name conflict with peer-group");
+			return NB_ERR_VALIDATION;
+		}
+		break;
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
+		break;
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
+		bgp_dnode = yang_dnode_get_parent(args->dnode, "bgp");
+		bgp = nb_running_get_entry(bgp_dnode, NULL, true);
+		conf_if = yang_dnode_get_string(args->dnode, "./interface");
+		v6only = yang_dnode_get_bool(args->dnode, "./v6only");
+
+		if (yang_dnode_exists(args->dnode,
+				      "./neighbor-remote-as/remote-as-type")) {
+			as_type = yang_dnode_get_enum(
+				args->dnode,
+				"./neighbor-remote-as/remote-as-type");
+			if (as_type != AS_SPECIFIED)
+				as_str = yang_dnode_get_string(
+					args->dnode,
+					"./neighbor-remote-as/remote-as-type");
+			else
+				// TODO AMJ add asn_asn2str
+				as_str = yang_dnode_get_string(
+					args->dnode,
+					"./neighbor-remote-as/remote-as");
+		}
+
+		peer = peer_create(NULL, conf_if, bgp, bgp->as, as,
+					as_type, NULL, true, as_str);
+		if (!peer) {
+			snprintf(args->errmsg, args->errmsg_len,
+					"%% BGP failed to create peer");
+			return NB_ERR_INCONSISTENCY;
+		}
+
+		if (v6only)
+			peer_flag_set(peer, PEER_FLAG_IFPEER_V6ONLY);
+
+		/* Request zebra to initiate IPv6 RAs on this interface. We do
+		 * this
+		 * any unnumbered peer in order to not worry about run-time
+		 * transitions
+		 * (e.g., peering is initially IPv4, but the IPv4 /30 or /31
+		 * address
+		 * gets deleted later etc.)
+		 */
+		if (peer->ifp)
+			bgp_zebra_initiate_radv(bgp, peer);
+
+		if (!CHECK_FLAG(peer->flags_invert, PEER_FLAG_CAPABILITY_ENHE)) {
+			SET_FLAG(peer->flags, PEER_FLAG_CAPABILITY_ENHE);
+			SET_FLAG(peer->flags_invert, PEER_FLAG_CAPABILITY_ENHE);
+			SET_FLAG(peer->flags_override, PEER_FLAG_CAPABILITY_ENHE);
+		}
+
+		nb_running_set_entry(args->dnode, peer);
 		break;
 	}
 
@@ -22033,6 +22837,7 @@ void routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumb
 	/* TODO: this cli callback is optional; the cli output may not need to be done at each node. */
 }
 
+// TODO AMJ add destroy
 int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumbered_neighbor_destroy(
 	struct nb_cb_destroy_args *args)
 {
@@ -22054,12 +22859,37 @@ int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumbe
 int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumbered_neighbor_v6only_modify(
 	struct nb_cb_modify_args *args)
 {
+	struct peer *peer = NULL;
+	bool v6only;
 	switch (args->event) {
 	case NB_EV_VALIDATE:
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
+		break;
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
+		peer = nb_running_get_entry_non_rec(lyd_parent(args->dnode),
+						    NULL, true);
+		v6only = yang_dnode_get_bool(args->dnode, NULL);
+		bool current_v6only = CHECK_FLAG(peer->flags,
+						 PEER_FLAG_IFPEER_V6ONLY);
+		if (v6only != current_v6only) {
+			if (v6only)
+				peer_flag_set(peer, PEER_FLAG_IFPEER_V6ONLY);
+			else
+				peer_flag_unset(peer, PEER_FLAG_IFPEER_V6ONLY);
+
+			peer->last_reset = PEER_DOWN_V6ONLY_CHANGE;
+
+			/* v6only flag changed. Reset bgp seesion */
+			if (BGP_IS_VALID_STATE_FOR_NOTIF(
+				    peer->connection->status))
+				bgp_notify_send(peer->connection,
+						BGP_NOTIFY_CEASE,
+						BGP_NOTIFY_CEASE_CONFIG_CHANGE);
+			else
+				bgp_session_reset(peer);
+		}
+
 		break;
 	}
 
@@ -22078,12 +22908,45 @@ void routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumb
 int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumbered_neighbor_peer_group_modify(
 	struct nb_cb_modify_args *args)
 {
+	const struct lyd_node *bgp_dnode, *group_dnode, *peer_dnode;
+	struct bgp *bgp;
+	struct peer_group *group = NULL;
+	struct peer *peer = NULL;
+	const char *group_name = NULL;
+	as_t as = 0;
+	int ret;
+
 	switch (args->event) {
 	case NB_EV_VALIDATE:
+		peer_dnode = yang_dnode_get_parent(args->dnode,
+						   "unnumbered-neighbor");
+		ret = peer_set_pgroup_validate(peer_dnode);
+		if (bgp_nb_errmsg_return(args->errmsg, args->errmsg_len, ret) <
+		    0)
+			return NB_ERR_VALIDATION;
+
+		break;
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
+		break;
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
+		bgp_dnode = yang_dnode_get_parent(args->dnode, "bgp");
+		bgp = nb_running_get_entry(bgp_dnode, NULL, true);
+
+		group_name = yang_dnode_get_string(args->dnode, NULL);
+		group_dnode = yang_dnode_getf(bgp_dnode,
+					      FRR_BGP_PEER_GROUP_XPATH,
+					      group_name, "");
+		peer = nb_running_get_entry_non_rec(lyd_parent(args->dnode), NULL, true);
+		group = nb_running_get_entry_non_rec(group_dnode, NULL, true);
+
+		ret = peer_group_bind(bgp, NULL, peer, group, &as);
+		if (bgp_nb_errmsg_return(args->errmsg, args->errmsg_len, ret) <
+		    0) {
+			/* would never happen */
+			return NB_ERR_INCONSISTENCY;
+		}
+
 		break;
 	}
 
@@ -22096,6 +22959,7 @@ void routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumb
 	/* TODO: this cli callback is optional; the cli output may not need to be done at each node. */
 }
 
+// TODO AMJ add destroy
 int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumbered_neighbor_peer_group_destroy(
 	struct nb_cb_destroy_args *args)
 {
@@ -22112,17 +22976,42 @@ int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumbe
 }
 
 /*
+ * XPath: /frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/unnumbered-neighbor/neighbor-remote-as
+ */
+void routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumbered_neighbor_neighbor_remote_as_apply_finish(
+	struct nb_cb_apply_finish_args *args)
+{
+	const struct lyd_node *peer_dnode = NULL;
+	peer_dnode = yang_dnode_get_parent(args->dnode,"unnumbered-neighbor");
+	peer_remote_as_set(peer_dnode);
+}
+
+/*
  * XPath: /frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/unnumbered-neighbor/neighbor-remote-as/remote-as-type
  */
 int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumbered_neighbor_neighbor_remote_as_remote_as_type_modify(
 	struct nb_cb_modify_args *args)
 {
+	const struct lyd_node *peer_dnode;
+	int ret = 0;
+
 	switch (args->event) {
 	case NB_EV_VALIDATE:
+		/* when remote_as is specified peer will be
+		 * validated in remote_as_modify callback */
+		if (yang_dnode_exists(args->dnode, "../remote-as"))
+			return NB_OK;
+
+		peer_dnode = yang_dnode_get_parent(args->dnode, "unnumbered-neighbor");
+		ret = peer_remote_as_validate(peer_dnode);
+		if (bgp_nb_errmsg_return(args->errmsg, args->errmsg_len, ret) <
+		    0)
+			return NB_ERR_VALIDATION;
+
+		break;
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
 		break;
 	}
 
@@ -22135,15 +23024,22 @@ void routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumb
 	/* TODO: this cli callback is optional; the cli output may not need to be done at each node. */
 }
 
+// TODO AMJ CLI no_neighbor_interface_peer_group_remote_as_cmd
 int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumbered_neighbor_neighbor_remote_as_remote_as_type_destroy(
 	struct nb_cb_destroy_args *args)
 {
+	const struct lyd_node *peer_dnode;
+	struct peer *peer;
 	switch (args->event) {
 	case NB_EV_VALIDATE:
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
+		break;
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
+		peer_dnode = yang_dnode_get_parent(args->dnode,
+						   "unnumbered-neighbor");
+		peer = nb_running_get_entry_non_rec(peer_dnode, NULL, true);
+		peer_as_change(peer, 0, AS_UNSPECIFIED, NULL);
 		break;
 	}
 
@@ -22156,12 +23052,20 @@ int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumbe
 int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumbered_neighbor_neighbor_remote_as_remote_as_modify(
 	struct nb_cb_modify_args *args)
 {
+	const struct lyd_node *peer_dnode;
+	int ret = 0;
 	switch (args->event) {
 	case NB_EV_VALIDATE:
+		peer_dnode = yang_dnode_get_parent(args->dnode, "unnumbered-neighbor");
+		ret = peer_remote_as_validate(peer_dnode);
+		if (bgp_nb_errmsg_return(args->errmsg, args->errmsg_len, ret) <
+		    0)
+			return NB_ERR_VALIDATION;
+
+		break;
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
 		break;
 	}
 
@@ -22182,7 +23086,6 @@ int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumbe
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
 		break;
 	}
 
@@ -35131,12 +36034,44 @@ void routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumb
 int routing_control_plane_protocols_control_plane_protocol_bgp_peer_groups_peer_group_create(
 	struct nb_cb_create_args *args)
 {
+	const char *group_str;
+	struct peer_group *group;
+	struct bgp *bgp;
+	char unnbr_xpath[XPATH_MAXLEN];
+	const struct lyd_node *bgp_dnode;
+
 	switch (args->event) {
 	case NB_EV_VALIDATE:
+		group_str = yang_dnode_get_string(args->dnode,
+						     "./peer-group-name");
+		bgp_dnode = yang_dnode_get_parent(args->dnode, "bgp");
+
+		snprintf(unnbr_xpath, sizeof(unnbr_xpath),
+			 FRR_BGP_NEIGHBOR_UNNUM_XPATH, group_str, "");
+		if (yang_dnode_exists(bgp_dnode, unnbr_xpath)) {
+			snprintf(args->errmsg, args->errmsg_len,
+				 "Name conflict with interface: %s",
+				 group_str);
+			return NB_ERR_VALIDATION;
+		}
+		break;
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
+		break;
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
+		bgp_dnode = yang_dnode_get_parent(args->dnode, "bgp");
+		bgp = nb_running_get_entry_non_rec(bgp_dnode, NULL, true);
+		group_str = yang_dnode_get_string(args->dnode,
+						     "./peer-group-name");
+
+		group = peer_group_get(bgp, group_str);
+		if (!group) {
+			snprintf(args->errmsg, args->errmsg_len,
+				 "BGP failed to find or create peer-group");
+			return NB_ERR_INCONSISTENCY;
+		}
+
+		nb_running_set_entry(args->dnode, group);
 		break;
 	}
 
@@ -35242,6 +36177,72 @@ int routing_control_plane_protocols_control_plane_protocol_bgp_peer_groups_peer_
 	return NB_OK;
 }
 
+/* Peer group's remote AS configuration.  */
+static void peer_group_remote_as_nb(struct peer_group *group, as_t *as,
+				    enum peer_asn_type as_type,
+				    const char *as_str)
+{
+	struct peer *peer;
+	struct listnode *node, *nnode;
+
+	if ((as_type == group->conf->as_type) && (group->conf->as == *as))
+		return;
+
+	/* When we setup peer-group AS number all peer group member's AS
+	   number must be updated to same number.  */
+	peer_as_change(group->conf, *as, as_type, as_str);
+
+	for (ALL_LIST_ELEMENTS(group->peer, node, nnode, peer)) {
+		if (((peer->as_type == AS_SPECIFIED) && peer->as != *as) ||
+		    (peer->as_type != as_type)) {
+			peer_as_change(peer, *as, as_type, as_str);
+			if (bgp_debug_neighbor_events(peer))
+				zlog_debug("%s peer %s set to as_type %u curr status %s trigger BGP_Start",
+					   __func__, peer->host, peer->as_type,
+					   lookup_msg(bgp_status_msg,
+						      peer->connection->status,
+						      NULL));
+			/* Start Peer FSM to form neighbor using new as,
+			 * NOTE: the connection is triggered upon start
+			 * timer expiry.
+			 */
+			if (!BGP_PEER_START_SUPPRESSED(peer))
+				BGP_EVENT_ADD(peer->connection, BGP_Start);
+		}
+	}
+
+	return;
+}
+
+/*
+ * XPath: /frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/peer-groups/peer-group/neighbor-remote-as
+ */
+void routing_control_plane_protocols_control_plane_protocol_bgp_peer_groups_peer_group_neighbor_remote_as_apply_finish(
+	struct nb_cb_apply_finish_args *args)
+{
+	struct bgp *bgp;
+	int as_type;
+	as_t as = 0;
+	char as_str[ASN_STRING_MAX_SIZE * 3];
+	struct peer_group *group;
+	const struct lyd_node *bgp_dnode, *group_dnode;
+
+	bgp_dnode = yang_dnode_get_parent(args->dnode, "bgp");
+	bgp = nb_running_get_entry(bgp_dnode, NULL, true);
+	as_type = yang_dnode_get_enum(args->dnode, "./remote-as-type");
+	if (yang_dnode_exists(args->dnode, "./remote-as")) {
+		as = yang_dnode_get_uint32(args->dnode, "./remote-as");
+		asn_asn2string(&as, as_str, sizeof(as_str), bgp->asnotation);
+	} else {
+		snprintf(as_str, sizeof(as_str), "%s",
+			 yang_dnode_get_string(args->dnode, "./remote-as-type"));
+	}
+
+	group_dnode = yang_dnode_get_parent(args->dnode, "peer-group");
+	group = nb_running_get_entry_non_rec(group_dnode, NULL, true);
+	peer_group_remote_as_nb(group, &as, as_type, as_str);
+}
+
 /*
  * XPath: /frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/peer-groups/peer-group/neighbor-remote-as/remote-as-type
  */
@@ -35253,7 +36254,6 @@ int routing_control_plane_protocols_control_plane_protocol_bgp_peer_groups_peer_
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
 		break;
 	}
 
@@ -35266,15 +36266,22 @@ void routing_control_plane_protocols_control_plane_protocol_bgp_peer_groups_peer
 	/* TODO: this cli callback is optional; the cli output may not need to be done at each node. */
 }
 
+// TODO AMJ CLI no_neighbor_interface_peer_group_remote_as_cmd
 int routing_control_plane_protocols_control_plane_protocol_bgp_peer_groups_peer_group_neighbor_remote_as_remote_as_type_destroy(
 	struct nb_cb_destroy_args *args)
 {
+	const struct lyd_node *group_dnode;
+	struct peer_group *group;
 	switch (args->event) {
 	case NB_EV_VALIDATE:
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
+		break;
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
+		group_dnode = yang_dnode_get_parent(args->dnode, "peer-group");
+		group = nb_running_get_entry_non_rec(group_dnode, NULL, true);
+
+		peer_group_remote_as_delete(group);
 		break;
 	}
 
@@ -35292,7 +36299,6 @@ int routing_control_plane_protocols_control_plane_protocol_bgp_peer_groups_peer_
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
 		break;
 	}
 
@@ -35313,7 +36319,6 @@ int routing_control_plane_protocols_control_plane_protocol_bgp_peer_groups_peer_
 	case NB_EV_PREPARE:
 	case NB_EV_ABORT:
 	case NB_EV_APPLY:
-		/* TODO: implement me. */
 		break;
 	}
 

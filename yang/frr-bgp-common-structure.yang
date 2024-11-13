@@ -199,6 +199,7 @@ submodule frr-bgp-common-structure {
     container neighbor-remote-as {
       leaf remote-as-type {
         type frr-bt:as-type;
+        must "not(../remote-as-type = 'as-specified') or ../remote-as";
         description
           "Remote AS type.";
       }

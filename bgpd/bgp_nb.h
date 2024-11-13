@@ -10,6 +10,7 @@ extern const struct frr_yang_module_info frr_bgp_info;
 /* prototypes */
 int routing_control_plane_protocols_name_validate(
 	struct nb_cb_create_args *args);
+extern int bgp_nb_errmsg_return(char *errmsg, size_t errmsg_len, int ret);
 int bgp_router_create(struct nb_cb_create_args *args);
 void routing_control_plane_protocols_control_plane_protocol_bgp_cli_write(
 	struct vty *vty, const struct lyd_node *dnode, bool show_defaults);
@@ -1177,10 +1178,14 @@ void routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighb
 	struct vty *vty, const struct lyd_node *dnode, bool show_defaults);
 int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbor_peer_group_destroy(
 	struct nb_cb_destroy_args *args);
+void routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbor_neighbor_remote_as_apply_finish(
+	struct nb_cb_apply_finish_args *args);
 int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbor_neighbor_remote_as_remote_as_type_modify(
 	struct nb_cb_modify_args *args);
 void routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbor_neighbor_remote_as_remote_as_type_cli_write(
 	struct vty *vty, const struct lyd_node *dnode, bool show_defaults);
+int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbor_neighbor_remote_as_remote_as_type_destroy(
+	struct nb_cb_destroy_args *args);
 int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbor_neighbor_remote_as_remote_as_modify(
 	struct nb_cb_modify_args *args);
 void routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbor_neighbor_remote_as_remote_as_cli_write(
@@ -3431,6 +3436,8 @@ void routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumb
 	struct vty *vty, const struct lyd_node *dnode, bool show_defaults);
 int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumbered_neighbor_peer_group_destroy(
 	struct nb_cb_destroy_args *args);
+void routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumbered_neighbor_neighbor_remote_as_apply_finish(
+	struct nb_cb_apply_finish_args *args);
 int routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumbered_neighbor_neighbor_remote_as_remote_as_type_modify(
 	struct nb_cb_modify_args *args);
 void routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumbered_neighbor_neighbor_remote_as_remote_as_type_cli_write(
@@ -5509,6 +5516,8 @@ void routing_control_plane_protocols_control_plane_protocol_bgp_peer_groups_peer
 	struct vty *vty, const struct lyd_node *dnode, bool show_defaults);
 int routing_control_plane_protocols_control_plane_protocol_bgp_peer_groups_peer_group_ipv6_listen_range_destroy(
 	struct nb_cb_destroy_args *args);
+void routing_control_plane_protocols_control_plane_protocol_bgp_peer_groups_peer_group_neighbor_remote_as_apply_finish(
+	struct nb_cb_apply_finish_args *args);
 int routing_control_plane_protocols_control_plane_protocol_bgp_peer_groups_peer_group_neighbor_remote_as_remote_as_type_modify(
 	struct nb_cb_modify_args *args);
 void routing_control_plane_protocols_control_plane_protocol_bgp_peer_groups_peer_group_neighbor_remote_as_remote_as_type_cli_write(

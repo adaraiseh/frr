@@ -1524,6 +1524,7 @@ const struct frr_yang_module_info frr_bgp_info = {
 			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/neighbor/neighbor-remote-as/remote-as-type",
 			.cbs = {
 				.modify = routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbor_neighbor_remote_as_remote_as_type_modify,
+				.destroy = routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbor_neighbor_remote_as_remote_as_type_destroy,
 			}
 		},
 		{
@@ -1531,6 +1532,7 @@ const struct frr_yang_module_info frr_bgp_info = {
 			.cbs = {
 				.modify = routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbor_neighbor_remote_as_remote_as_modify,
 				.destroy = routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbor_neighbor_remote_as_remote_as_destroy,
+				.apply_finish = routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_neighbor_neighbor_remote_as_apply_finish,
 			}
 		},
 		{
@@ -4406,6 +4408,7 @@ const struct frr_yang_module_info frr_bgp_info = {
 		{
 			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/neighbors/unnumbered-neighbor/neighbor-remote-as/remote-as-type",
 			.cbs = {
+				.apply_finish = routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumbered_neighbor_neighbor_remote_as_apply_finish,
 				.modify = routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumbered_neighbor_neighbor_remote_as_remote_as_type_modify,
 				.destroy = routing_control_plane_protocols_control_plane_protocol_bgp_neighbors_unnumbered_neighbor_neighbor_remote_as_remote_as_type_destroy,
 			}
@@ -7076,6 +7079,12 @@ const struct frr_yang_module_info frr_bgp_info = {
 			.cbs = {
 				.create = routing_control_plane_protocols_control_plane_protocol_bgp_peer_groups_peer_group_ipv6_listen_range_create,
 				.destroy = routing_control_plane_protocols_control_plane_protocol_bgp_peer_groups_peer_group_ipv6_listen_range_destroy,
+			}
+		},
+		{
+			.xpath = "/frr-routing:routing/control-plane-protocols/control-plane-protocol/frr-bgp:bgp/peer-groups/peer-group/neighbor-remote-as",
+			.cbs = {
+				.apply_finish = routing_control_plane_protocols_control_plane_protocol_bgp_peer_groups_peer_group_neighbor_remote_as_apply_finish,
 			}
 		},
 		{

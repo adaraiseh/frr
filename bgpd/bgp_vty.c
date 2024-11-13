@@ -781,7 +781,7 @@ int bgp_vty_find_and_parse_afi_safi_bgp(struct vty *vty,
 	return *idx;
 }
 
-static bool peer_address_self_check(struct bgp *bgp, union sockunion *su)
+bool peer_address_self_check(struct bgp *bgp, union sockunion *su)
 {
 	struct interface *ifp = NULL;
 	struct listnode *node;
@@ -4912,65 +4912,6 @@ DEFUN (no_bgp_disable_connected_route_check,
 	return ret;
 }
 
-
-static int peer_remote_as_vty(struct vty *vty, const char *peer_str,
-			      const char *as_str)
-{
-	VTY_DECLVAR_CONTEXT(bgp, bgp);
-	int ret;
-	as_t as;
-	enum peer_asn_type as_type = AS_SPECIFIED;
-	union sockunion su;
-
-	if (as_str[0] == 'i') {
-		as = 0;
-		as_type = AS_INTERNAL;
-	} else if (as_str[0] == 'e') {
-		as = 0;
-		as_type = AS_EXTERNAL;
-	} else if (as_str[0] == 'a') {
-		as = 0;
-		as_type = AS_AUTO;
-	} else if (!asn_str2asn(as_str, &as))
-		as_type = AS_UNSPECIFIED;
-
-	if (as_type == AS_UNSPECIFIED) {
-		vty_out(vty, "%% Invalid peer AS: %s\n", as_str);
-		return CMD_WARNING_CONFIG_FAILED;
-	}
-	/* If peer is peer group or interface peer, call proper function. */
-	ret = str2sockunion(peer_str, &su);
-	if (ret < 0) {
-		struct peer *peer;
-
-		/* Check if existing interface peer */
-		peer = peer_lookup_by_conf_if(bgp, peer_str);
-
-		ret = peer_remote_as(bgp, NULL, peer_str, &as, as_type, as_str);
-
-		/* if not interface peer, check peer-group settings */
-		if (ret < 0 && !peer) {
-			ret = peer_group_remote_as(bgp, peer_str, &as, as_type,
-						   as_str);
-			if (ret < 0) {
-				vty_out(vty,
-					"%% Create the peer-group or interface first\n");
-				return CMD_WARNING_CONFIG_FAILED;
-			}
-			return CMD_SUCCESS;
-		}
-	} else {
-		if (peer_address_self_check(bgp, &su)) {
-			vty_out(vty,
-				"%% Can not configure the local system as neighbor\n");
-			return CMD_WARNING_CONFIG_FAILED;
-		}
-		ret = peer_remote_as(bgp, &su, NULL, &as, as_type, as_str);
-	}
-
-	return bgp_vty_return(vty, ret);
-}
-
 DEFUN (bgp_default_shutdown,
        bgp_default_shutdown_cmd,
        "[no] bgp default shutdown",
@@ -5033,10 +4974,10 @@ ALIAS(no_bgp_shutdown, no_bgp_shutdown_msg_cmd,
       "no bgp shutdown message MSG...", NO_STR BGP_STR
       "Administrative shutdown of the BGP instance\n"
       "Add a shutdown message (RFC 8203)\n" "Shutdown message\n")
-
-DEFUN (neighbor_remote_as,
+// TODO AMJ review
+DEFPY_YANG (neighbor_remote_as,
        neighbor_remote_as_cmd,
-       "neighbor <A.B.C.D|X:X::X:X|WORD> remote-as <ASNUM|internal|external|auto>",
+       "neighbor <A.B.C.D|X:X::X:X|WORD>$neighbor_str remote-as <ASNUM|internal|external|auto>$remote_as_str",
        NEIGHBOR_STR
        NEIGHBOR_ADDR_STR2
        "Specify a BGP neighbor\n"
@@ -5045,10 +4986,66 @@ DEFUN (neighbor_remote_as,
        "External BGP peer\n"
        "Automatically detect remote ASN\n")
 {
-	int idx_peer = 1;
-	int idx_remote_as = 3;
-	return peer_remote_as_vty(vty, argv[idx_peer]->arg,
-				  argv[idx_remote_as]->arg);
+	char type_xpath[XPATH_MAXLEN];
+	char unnbr_xpath[XPATH_MAXLEN];
+	char prgrp_xpath[XPATH_MAXLEN];
+	char value_xpath[XPATH_MAXLEN];
+	union sockunion su;
+	const char *as_type_str = "as-specified";
+
+	if (str2sockunion(neighbor_str, &su) < 0) {
+		snprintf(unnbr_xpath, sizeof(unnbr_xpath),
+			 FRR_BGP_NEIGHBOR_UNNUM_XPATH, neighbor_str, "");
+
+		snprintf(prgrp_xpath, sizeof(prgrp_xpath),
+			 FRR_BGP_PEER_GROUP_XPATH, neighbor_str, "");
+
+		/* interface */
+		if (yang_dnode_existsf(vty->candidate_config->dnode, "%s%s",
+				       VTY_CURR_XPATH, unnbr_xpath + 1)) {
+			snprintf(type_xpath, sizeof(type_xpath),
+				 FRR_BGP_NEIGHBOR_UNNUM_XPATH, neighbor_str,
+				 "/neighbor-remote-as/remote-as-type");
+			snprintf(value_xpath, sizeof(value_xpath),
+				 FRR_BGP_NEIGHBOR_UNNUM_XPATH, neighbor_str,
+				 "/neighbor-remote-as/remote-as");
+		/* group */
+		} else if (yang_dnode_existsf(vty->candidate_config->dnode,
+					      "%s%s", VTY_CURR_XPATH,
+					      prgrp_xpath + 1)) {
+			snprintf(type_xpath, sizeof(type_xpath),
+				 FRR_BGP_PEER_GROUP_XPATH, neighbor_str,
+				 "/neighbor-remote-as/remote-as-type");
+			snprintf(value_xpath, sizeof(value_xpath),
+				 FRR_BGP_PEER_GROUP_XPATH, neighbor_str,
+				 "/neighbor-remote-as/remote-as");
+		} else {
+			vty_out(vty,
+				"%% Create the peer-group or interface first\n");
+			return CMD_WARNING_CONFIG_FAILED;
+		}
+	} else {
+		snprintf(type_xpath, sizeof(type_xpath),
+			 FRR_BGP_NEIGHBOR_NUM_XPATH, neighbor_str,
+			 "/neighbor-remote-as/remote-as-type");
+		snprintf(value_xpath, sizeof(value_xpath),
+			 FRR_BGP_NEIGHBOR_NUM_XPATH, neighbor_str,
+			 "/neighbor-remote-as/remote-as");
+	}
+
+	if (remote_as_str[0] == 'i') {
+		as_type_str = "internal";
+	} else if (remote_as_str[0] == 'e') {
+		as_type_str = "external";
+	} else if (remote_as_str[0] == 'a') {
+		as_type_str = "auto";
+	} else {
+		nb_cli_enqueue_change(vty, value_xpath, NB_OP_MODIFY,
+				      remote_as_str);
+	}
+
+	nb_cli_enqueue_change(vty, type_xpath, NB_OP_MODIFY, as_type_str);
+	return nb_cli_apply_changes(vty, NULL);
 }
 
 DEFPY (bgp_allow_martian,
@@ -5189,6 +5186,7 @@ static int peer_conf_interface_get(struct vty *vty, const char *conf_if,
 	return bgp_vty_return(vty, ret);
 }
 
+// TODO AMJ convert
 DEFUN (neighbor_interface_config,
        neighbor_interface_config_cmd,
        "neighbor WORD interface [peer-group PGNAME]",
@@ -5269,34 +5267,25 @@ DEFUN (neighbor_interface_v6only_config_remote_as,
 				       argv[idx_remote_as]->arg);
 }
 
-DEFUN (neighbor_peer_group,
+DEFUN_YANG (neighbor_peer_group,
        neighbor_peer_group_cmd,
        "neighbor WORD peer-group",
        NEIGHBOR_STR
        "Interface name or neighbor tag\n"
        "Configure peer-group\n")
 {
-	VTY_DECLVAR_CONTEXT(bgp, bgp);
+	char base_xpath[XPATH_MAXLEN];
 	int idx_word = 1;
-	struct peer *peer;
-	struct peer_group *group;
 
-	peer = peer_lookup_by_conf_if(bgp, argv[idx_word]->arg);
-	if (peer) {
-		vty_out(vty, "%% Name conflict with interface: \n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	snprintf(base_xpath, sizeof(base_xpath), FRR_BGP_PEER_GROUP_XPATH,
+		 argv[idx_word]->arg, "");
 
-	group = peer_group_get(bgp, argv[idx_word]->arg);
-	if (!group) {
-		vty_out(vty, "%% BGP failed to find or create peer-group\n");
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	nb_cli_enqueue_change(vty, base_xpath, NB_OP_CREATE, NULL);
 
-	return CMD_SUCCESS;
+	return nb_cli_apply_changes(vty, NULL);
 }
 
-DEFUN (no_neighbor,
+DEFUN_YANG (no_neighbor,
        no_neighbor_cmd,
        "no neighbor <WORD|<A.B.C.D|X:X::X:X> [remote-as <(1-4294967295)|internal|external|auto>]>",
        NO_STR
@@ -5308,71 +5297,47 @@ DEFUN (no_neighbor,
        "External BGP peer\n"
        "Automatically detect remote ASN\n")
 {
-	VTY_DECLVAR_CONTEXT(bgp, bgp);
 	int idx_peer = 2;
-	int ret;
+	char base_xpath[XPATH_MAXLEN];
+	char num_xpath[XPATH_MAXLEN];
+	char unnbr_xpath[XPATH_MAXLEN];
+	char prgrp_xpath[XPATH_MAXLEN];
 	union sockunion su;
-	struct peer_group *group;
-	struct peer *peer;
-	struct peer *other;
-	afi_t afi;
-	int lr_count;
-
-	ret = str2sockunion(argv[idx_peer]->arg, &su);
-	if (ret < 0) {
-		/* look up for neighbor by interface name config. */
-		peer = peer_lookup_by_conf_if(bgp, argv[idx_peer]->arg);
-		if (peer) {
-			/* Request zebra to terminate IPv6 RAs on this
-			 * interface. */
-			if (peer->ifp)
-				bgp_zebra_terminate_radv(peer->bgp, peer);
-			peer_notify_unconfig(peer);
-			peer_delete(peer);
-			return CMD_SUCCESS;
-		}
-
-		group = peer_group_lookup(bgp, argv[idx_peer]->arg);
-		if (group) {
-			for (afi = AFI_IP; afi < AFI_MAX; afi++) {
-				lr_count = listcount(group->listen_range[afi]);
-				if (lr_count) {
-					vty_out(vty,
-						"%%Peer-group %s is attached to %d listen-range(s), delete them first\n",
-						group->name, lr_count);
-					return CMD_WARNING_CONFIG_FAILED;
-				}
-			}
-			peer_group_notify_unconfig(group);
-			peer_group_delete(group);
-		} else {
-			vty_out(vty, "%% Create the peer-group first\n");
-			return CMD_WARNING_CONFIG_FAILED;
+	if (str2sockunion(argv[idx_peer]->arg, &su) == 0) {
+		snprintf(num_xpath, sizeof(num_xpath),
+			 FRR_BGP_NEIGHBOR_NUM_XPATH, argv[idx_peer]->arg, "");
+		if (yang_dnode_existsf(vty->candidate_config->dnode, "%s%s",
+				       VTY_CURR_XPATH, num_xpath + 1)) {
+			strlcpy(base_xpath, num_xpath, sizeof(base_xpath));
 		}
 	} else {
-		peer = peer_lookup(bgp, &su);
-		if (peer) {
-			if (peer_dynamic_neighbor(peer)) {
-				vty_out(vty,
-					"%% Operation not allowed on a dynamic neighbor\n");
-				return CMD_WARNING_CONFIG_FAILED;
-			}
+		snprintf(unnbr_xpath, sizeof(unnbr_xpath),
+			 FRR_BGP_NEIGHBOR_UNNUM_XPATH, argv[idx_peer]->arg, "");
 
-			other = peer->doppelganger;
+		snprintf(prgrp_xpath, sizeof(prgrp_xpath),
+			 FRR_BGP_PEER_GROUP_XPATH, argv[idx_peer]->arg, "");
 
-			if (CHECK_FLAG(peer->flags, PEER_FLAG_CAPABILITY_ENHE))
-				bgp_zebra_terminate_radv(peer->bgp, peer);
-
-			peer_notify_unconfig(peer);
-			peer_delete(peer);
-			if (other && other->connection->status != Deleted) {
-				peer_notify_unconfig(other);
-				peer_delete(other);
-			}
+		if (yang_dnode_existsf(vty->candidate_config->dnode, "%s%s",
+				       VTY_CURR_XPATH, unnbr_xpath + 1)) {
+			strlcpy(base_xpath, unnbr_xpath, sizeof(base_xpath));
+		} else if (yang_dnode_existsf(vty->candidate_config->dnode,
+					      "%s%s", VTY_CURR_XPATH,
+					      prgrp_xpath + 1)) {
+			strlcpy(base_xpath, prgrp_xpath, sizeof(base_xpath));
+		} else {
+			vty_out(vty,
+				"%% Create the peer-group or interface first\n");
+			return CMD_WARNING_CONFIG_FAILED;
 		}
 	}
 
-	return CMD_SUCCESS;
+	nb_cli_enqueue_change(vty, base_xpath, NB_OP_DESTROY, NULL);
+
+	/*
+	 * Need to commit any pending so this command doesn't merge with a
+	 * create into a modify, which BGP can't handle
+	 */
+	return nb_cli_apply_changes_clear_pending(vty, NULL);
 }
 
 DEFUN (no_neighbor_interface_config,
@@ -5720,7 +5685,7 @@ ALIAS_HIDDEN(no_neighbor_activate, no_neighbor_activate_hidden_cmd,
 	     NO_STR NEIGHBOR_STR NEIGHBOR_ADDR_STR2
 	     "Enable the Address Family for this Neighbor\n")
 
-DEFUN (neighbor_set_peer_group,
+DEFUN_YANG (neighbor_set_peer_group,
        neighbor_set_peer_group_cmd,
        "neighbor <A.B.C.D|X:X::X:X|WORD> peer-group PGNAME",
        NEIGHBOR_STR
@@ -5736,6 +5701,7 @@ DEFUN (neighbor_set_peer_group,
 	union sockunion su;
 	struct peer *peer;
 	struct peer_group *group;
+	char pgrp_xpath[XPATH_MAXLEN];
 
 	ret = str2sockunion(argv[idx_peer]->arg, &su);
 	if (ret < 0) {
@@ -5746,19 +5712,22 @@ DEFUN (neighbor_set_peer_group,
 			return CMD_WARNING_CONFIG_FAILED;
 		}
 	} else {
-		if (peer_address_self_check(bgp, &su)) {
-			vty_out(vty,
-				"%% Can not configure the local system as neighbor\n");
-			return CMD_WARNING_CONFIG_FAILED;
-		}
+		snprintf(pgrp_xpath, sizeof(pgrp_xpath),
+			 FRR_BGP_NEIGHBOR_NUM_XPATH, argv[idx_peer]->arg,
+			 "/peer-group");
+		printf("set peer group %s\n", pgrp_xpath);
+		nb_cli_enqueue_change(vty, pgrp_xpath, NB_OP_MODIFY,
+				      argv[idx_word]->arg);
+
+		return nb_cli_apply_changes(vty, NULL);
 
 		/* Disallow for dynamic neighbor. */
-		peer = peer_lookup(bgp, &su);
+		/*peer = peer_lookup(bgp, &su);
 		if (peer && peer_dynamic_neighbor(peer)) {
 			vty_out(vty,
 				"%% Operation not allowed on a dynamic neighbor\n");
 			return CMD_WARNING_CONFIG_FAILED;
-		}
+		}*/
 	}
 
 	group = peer_group_lookup(bgp, argv[idx_word]->arg);
@@ -7667,7 +7636,7 @@ static int peer_port_vty(struct vty *vty, const char *ip_str, int afi,
 }
 
 /* Set specified peer's BGP port.  */
-DEFUN (neighbor_port,
+DEFUN_YANG (neighbor_port,
        neighbor_port_cmd,
        "neighbor <A.B.C.D|X:X::X:X|WORD> port (0-65535)",
        NEIGHBOR_STR
@@ -7677,8 +7646,15 @@ DEFUN (neighbor_port,
 {
 	int idx_ip = 1;
 	int idx_number = 3;
-	return peer_port_vty(vty, argv[idx_ip]->arg, AFI_IP,
-			     argv[idx_number]->arg);
+	char base_xpath[XPATH_MAXLEN];
+
+	snprintf(base_xpath, sizeof(base_xpath), FRR_BGP_NEIGHBOR_NUM_XPATH,
+		 argv[idx_ip]->arg, "/local-port");
+	printf("base xpath %s\n", base_xpath);
+	nb_cli_enqueue_change(vty, base_xpath, NB_OP_MODIFY,
+			      argv[idx_number]->arg);
+
+	return nb_cli_apply_changes(vty, NULL);
 }
 
 DEFUN (no_neighbor_port,
